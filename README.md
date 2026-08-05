@@ -10,6 +10,8 @@ Public source: https://github.com/oskarcode/docagent
 
 ## Start Here (Python/Django Mental Model)
 
+> **Why this comparison exists:** I am more familiar with Python and Django, so I use their concepts as a personal learning bridge for this TypeScript project. The comparisons below are approximate mental models, not claims that the frameworks behave identically.
+
 | This project | Django/Python equivalent |
 |---|---|
 | `src/app.ts` Worker entrypoint | `asgi.py` plus `urls.py`, middleware, and small views |
