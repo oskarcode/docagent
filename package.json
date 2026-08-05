@@ -1,0 +1,45 @@
+{
+  "name": "tech-docs-flue-research-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DocAgent: durable Flue research across Cloudflare and AWS documentation",
+  "scripts": {
+    "dev": "vite dev",
+    "dev:web": "vite --config frontend/vite.config.ts --port 5174",
+    "build": "vite build",
+    "build:web": "vite build --config frontend/vite.config.ts",
+    "prepare:deploy": "node scripts/prepare-deploy.mjs",
+    "check:types": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "check": "npm run check:types && npm test && npm run build:web && npm run build",
+    "deploy": "npm run check && npm run prepare:deploy && wrangler deploy --config dist/tech_docs_flue_research_worker/wrangler.json",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@flue/react": "^2.0.2",
+    "@flue/runtime": "^2.0.2",
+    "@flue/sdk": "^2.0.2",
+    "agents": "^0.20.1",
+    "hono": "^4.13.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "valibot": "^1.4.2"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.50.0",
+    "@cloudflare/workers-types": "^5.20260804.1",
+    "@flue/cli": "^2.0.2",
+    "@flue/vite": "^2.0.2",
+    "@types/node": "^22.10.10",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.0",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.118.0"
+  }
+}

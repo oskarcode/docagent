@@ -1,0 +1,17 @@
+{
+  "name": "DocAgent",
+  "short_name": "DocAgent",
+  "description": "Research Cloudflare and AWS documentation with current official sources.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#071019",
+  "theme_color": "#08111c",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // Worker identity and runtime compatibility apply to development and production.
+  "name": "tech-docs-flue-research-worker",
+  "compatibility_date": "2026-08-05",
+  "compatibility_flags": ["nodejs_compat", "enable_request_signal"],
+  // Non-secret runtime settings select the AI Gateway and official MCP endpoints.
+  "vars": {
+    "AI_GATEWAY_ID": "tech-docs-langgraph-worker",
+    "CF_DOCS_VECTORIZE_MCP_URL": "https://docs.mcp.cloudflare.com/mcp",
+    "AWS_KNOWLEDGE_MCP_URL": "https://knowledge-mcp.global.api.aws"
+  },
+  // Workers AI supplies both native models and AI Gateway binding methods.
+  "ai": {
+    "binding": "AI"
+  },
+  // The React build is an SPA; API routes run Worker code before asset lookup.
+  "assets": {
+    "directory": "./dist-web",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  // Flue owns durable conversation storage and execution.
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "FLUE_RESEARCH_AGENT_AGENT",
+        "class_name": "FlueResearchAgentAgent"
+      }
+    ]
+  },
+  // Never rewrite an applied migration tag; add a new tag when introducing durable classes.
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["FlueResearchAgentAgent", "ResearchRateLimiter"]
+    },
+    {
+      "tag": "v2",
+      "deleted_classes": ["ResearchRateLimiter"]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["FlueCloudflareResearchAgentAgent", "FlueAwsResearchAgentAgent"]
+    },
+    {
+      "tag": "v4",
+      "deleted_classes": ["FlueCloudflareResearchAgentAgent", "FlueAwsResearchAgentAgent"]
+    }
+  ],
+  // Full logs and traces support demo troubleshooting and durable-run diagnosis.
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true
+    }
+  }
+}

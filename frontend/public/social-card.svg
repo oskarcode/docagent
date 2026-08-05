@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
+  <title id="title">DocAgent</title>
+  <desc id="description">Research Cloudflare and AWS documentation with current official sources.</desc>
+  <rect width="1200" height="630" fill="#071019"/>
+  <path d="M0 105h1200M0 210h1200M0 315h1200M0 420h1200M0 525h1200M200 0v630M400 0v630M600 0v630M800 0v630M1000 0v630" stroke="#182832" stroke-width="2"/>
+  <rect x="86" y="82" width="1028" height="466" fill="#0b151f" stroke="#23303a" stroke-width="3"/>
+  <rect x="86" y="82" width="18" height="466" fill="#ff7a3d"/>
+  <g transform="translate(154 153)">
+    <rect width="118" height="118" rx="16" fill="#101d27" stroke="#ff7a3d" stroke-width="8"/>
+    <path d="M28 25h47l22 22v48H28z" fill="none" stroke="#dce4e9" stroke-width="7"/>
+    <path d="M75 25v22h22M44 62h36M44 77h27" fill="none" stroke="#dce4e9" stroke-width="7"/>
+  </g>
+  <text x="310" y="234" fill="#ff7a3d" font-family="monospace" font-size="24" font-weight="700" letter-spacing="4">FLUE DURABLE AGENT</text>
+  <text x="152" y="364" fill="#f1f3f4" font-family="Georgia, serif" font-size="92" font-weight="600">DocAgent</text>
+  <text x="154" y="432" fill="#9aa8b2" font-family="Arial, sans-serif" font-size="32">Cloudflare and AWS research from current official sources.</text>
+  <text x="154" y="498" fill="#55a9ff" font-family="monospace" font-size="23">docagent.oskarcode.com</text>
+</svg>

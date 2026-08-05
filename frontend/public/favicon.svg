@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="DocAgent">
+  <rect width="64" height="64" rx="10" fill="#08111c"/>
+  <path d="M13 12h26l12 12v28H13z" fill="#101d27" stroke="#ff7a3d" stroke-width="3"/>
+  <path d="M39 12v12h12" fill="none" stroke="#ff7a3d" stroke-width="3"/>
+  <path d="M22 32h20M22 40h16" stroke="#dce4e9" stroke-width="3" stroke-linecap="square"/>
+</svg>

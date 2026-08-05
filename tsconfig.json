@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    // Modern runtime and browser libraries cover both the Worker and React application.
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    // Vite performs bundling, so TypeScript resolves modules without emitting duplicate build output.
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    // Strict application checks remain enabled while third-party declaration internals are skipped.
+    "strict": true,
+    "skipLibCheck": true,
+    // Runtime declarations cover Cloudflare bindings, build scripts, and Vite browser imports.
+    "types": ["@cloudflare/workers-types", "node", "vite/client"]
+  },
+  // Only application, test, and build-configuration source participates in type checking.
+  "include": ["src/**/*.ts", "frontend/**/*.ts", "frontend/**/*.tsx", "test/**/*.ts", "vite.config.ts", "vitest.config.ts"]
+}

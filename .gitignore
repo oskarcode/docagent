@@ -1,0 +1,13 @@
+node_modules/
+dist/
+dist-web/
+.wrangler/
+.flue-vite/
+.flue-vite.wrangler.jsonc
+.dev.vars
+worker-configuration.d.ts
+*.log
+.DS_Store
+SESSION_CONTEXT.md
+SESSION_HISTORY.md
+opencode-session-*.json
