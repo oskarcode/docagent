@@ -50,9 +50,11 @@ export const MODEL_REGISTRY = [
   },
 ] as const;
 
+// Model IDs form a compile-time union derived from the runtime allowlist; GLM-5.2 is the fresh-browser default.
 export type ModelId = (typeof MODEL_REGISTRY)[number]['id'];
 export const DEFAULT_MODEL_ID: ModelId = 'glm-5-2';
 
+// Each MCP definition combines user-facing labels, runtime endpoints, optional secret overrides, and a stable token bit.
 export type McpServerDefinition = {
   readonly id: string;
   readonly name: string;
@@ -91,21 +93,42 @@ export const MCP_REGISTRY = [
   },
 ] as const satisfies readonly McpServerDefinition[];
 
+/**
+ * Input:
+ * - An approved MCP definition and an optional environment URL override.
+ *
+ * Output:
+ * - The selected HTTPS endpoint string.
+ *
+ * What this function does:
+ * - Rejects malformed or plaintext endpoints before the agent can send tools or bearer tokens to them.
+ */
+export function resolveMcpServerUrl(server: McpServerDefinition, override?: string): string {
+  const value = override?.trim() || server.url;
+  const url = new URL(value);
+  if (url.protocol !== 'https:') throw new Error(`MCP endpoint for ${server.id} must use HTTPS.`);
+  return value;
+}
+
+// Source IDs are derived from the registry so browser and Worker code cannot drift at compile time.
 export type McpServerId = (typeof MCP_REGISTRY)[number]['id'];
 // New conversations begin with every source explicitly marked as enabled by the registry.
 export const DEFAULT_MCP_SERVER_IDS: McpServerId[] = MCP_REGISTRY
   .filter((server) => server.defaultEnabled)
   .map((server) => server.id);
 
+// The known mask rejects signed IDs containing unregistered future bits; envelope tags delimit per-prompt routing metadata.
 const knownMcpMask = MCP_REGISTRY.reduce((mask, server) => mask | server.bit, 0);
 const PROMPT_CONFIG_START = '<docagent-config>';
 const PROMPT_CONFIG_END = '</docagent-config>';
 
+// ConversationConfig is the shared model/source shape used by tokens, browser controls, and agent delivery parsing.
 export type ConversationConfig = {
   model: ModelId;
   mcpServerIds: McpServerId[];
 };
 
+// A configured prompt adds the user-visible question after validated routing metadata.
 export type ConfiguredPrompt = ConversationConfig & {
   prompt: string;
 };

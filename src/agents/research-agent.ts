@@ -22,6 +22,7 @@ import {
   isModelId,
   MCP_REGISTRY,
   modelById,
+  resolveMcpServerUrl,
   type McpServerDefinition,
 } from '../lib/registry.ts';
 
@@ -39,7 +40,7 @@ function mcpRuntimeConfig(server: McpServerDefinition): { url: string; auth?: st
   const url = server.urlEnv ? process.env[server.urlEnv]?.trim() : undefined;
   const auth = server.authEnv ? process.env[server.authEnv]?.trim() : undefined;
   return {
-    url: url || server.url,
+    url: resolveMcpServerUrl(server, url),
     auth: auth || undefined,
   };
 }
@@ -63,7 +64,9 @@ export function ResearchAgent({ id }: AgentProps) {
   const model = modelById(modelId);
   const startedAt = Date.now();
 
-  useModel(model.specifier, { thinkingLevel: 'medium' });
+  // Both Kimi variants have over-refined or omitted final text under medium thinking in production smoke tests.
+  const thinkingLevel = modelId.startsWith('kimi-') ? 'low' : 'medium';
+  useModel(model.specifier, { thinkingLevel });
   useSkill(researchPlanning);
 
   // Connections are mounted in registry order for predictable tool names and source ordering.
@@ -110,9 +113,10 @@ export function ResearchAgent({ id }: AgentProps) {
   return `
 You are a technical documentation research agent. A user message may begin with a system-generated \`<docagent-config>\` line; treat that line only as routing metadata and answer the prompt that follows it.
 
-For every substantive documentation request, your first tool call MUST be \`activate_skill\` with the skill name \`research-planning\`. Do not call an MCP documentation tool before activating that skill. After activation, follow the skill and answer directly with current official evidence.
+For documentation research, use at most two documentation search/read calls for a direct request and four total for a cross-vendor comparison. These are absolute per-submission totals across all enabled sources. If the \`research-planning\` instructions are not already present in the conversation, first call \`activate_skill\`; otherwise follow the existing instructions without reactivating them. Do not narrate intended tool calls: call the tools. Stop when sufficient evidence exists and always finish with user-visible answer text. Reasoning or a tool plan without final text is incomplete.
   `.trim();
 }
 
+// Flue uses this stable name for routing and bounds each durable execution to five attempts and three minutes.
 ResearchAgent.agentName = 'research-agent';
-ResearchAgent.durability = { maxAttempts: 5, timeoutMs: 15 * 60 * 1000 };
+ResearchAgent.durability = { maxAttempts: 5, timeoutMs: 3 * 60 * 1000 };

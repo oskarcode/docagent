@@ -1,5 +1,5 @@
-// React owns browser state, effects, deferred rendering, and event types.
-import { useDeferredValue, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+// React owns browser state, effects, refs, and event types.
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 
 // Flue restores durable messages and sends prompts to the selected agent URL.
 import { useFlueAgent, type FlueConversationMessage } from '@flue/react';
@@ -52,6 +52,16 @@ type ConversationRecord = {
   title: string;
   createdAt: number;
   updatedAt: number;
+};
+
+// An optimistic prompt appears immediately, then correlates to Flue history through submissionId.
+type OptimisticPrompt = {
+  id: string;
+  conversationId: string;
+  prompt: string;
+  model: ModelId;
+  mcpServerIds: McpServerId[];
+  submissionId?: string;
 };
 
 /**
@@ -245,6 +255,7 @@ function ConversationMessage({ message, index }: { message: FlueConversationMess
         <strong>{message.role === 'user' ? 'You' : 'Research'}</strong>
       </div>
       <div className="message-body">
+        {/* The badge records the model and documentation sources used for this exact message. */}
         {configuration && (
           <p className="message-config">
             {modelById(configuration.model).name}
@@ -254,11 +265,12 @@ function ConversationMessage({ message, index }: { message: FlueConversationMess
               .join(' + ')}
           </p>
         )}
+        {/* Reasoning and sanitized tool activity stay expandable and separate from the final answer. */}
         {message.role === 'assistant' && trace.length > 0 && (
           <details className="response-trace">
             <summary>
               <span className={`trace-status ${traceRunning ? 'running' : ''}`} />
-              Reasoning &amp; tools
+              Events
               <small>{trace.length} {trace.length === 1 ? 'step' : 'steps'}</small>
             </summary>
             <div className="trace-list">
@@ -277,9 +289,41 @@ function ConversationMessage({ message, index }: { message: FlueConversationMess
             </div>
           </details>
         )}
+        {/* Assistant text supports sourced Markdown; user prompts remain plain text. */}
         {message.role === 'assistant'
           ? text && <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
           : <p>{text}</p>}
+      </div>
+    </article>
+  );
+}
+
+/**
+ * Input:
+ * - A newly submitted prompt and its Flue submission correlation metadata.
+ *
+ * Output:
+ * - An immediate user-message row while durable Flue history catches up.
+ *
+ * What this function does:
+ * - Prevents the question from disappearing between browser admission and SSE reconciliation.
+ */
+function OptimisticUserMessage({ item, index }: { item: OptimisticPrompt; index: number }) {
+  return (
+    <article className="message user optimistic">
+      <div className="message-gutter">
+        <span>{String(index + 1).padStart(2, '0')}</span>
+        <strong>You</strong>
+      </div>
+      <div className="message-body">
+        <p className="message-config">
+          {modelById(item.model).name}
+          {' / '}
+          {item.mcpServerIds
+            .map((id) => MCP_REGISTRY.find((server) => server.id === id)?.shortLabel ?? id)
+            .join(' + ')}
+        </p>
+        <p>{item.prompt}</p>
       </div>
     </article>
   );
@@ -338,16 +382,43 @@ export function App() {
   const [isCreating, setIsCreating] = useState(!initial.conversation);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionAdmitted, setSubmissionAdmitted] = useState(false);
+  const [optimisticPrompts, setOptimisticPrompts] = useState<OptimisticPrompt[]>([]);
   const submissionPending = useRef(false);
+  const initializationStarted = useRef(false);
 
   // Flue reconnects whenever the signed conversation ID changes and restores durable history automatically.
   const agentUrl = conversationId ? `/api/agents/research/${conversationId}` : undefined;
   const agent = useFlueAgent({ url: agentUrl });
-  const messages = useDeferredValue(agent.messages);
+  // Streaming parts must share the hook's current snapshot; deferring here batches Events and answer tokens.
+  const messages = agent.messages;
   const visibleMessages = messages.filter((message) => message.display === 'visible' && (message.role === 'user' || message.role === 'assistant'));
   const busy = isCreating || isSubmitting || agent.status === 'submitted' || agent.status === 'streaming';
   const selectedModel = modelById(model);
   const activeConversation = conversations.find((conversation) => conversation.id === conversationId);
+  const currentOptimisticPrompts = optimisticPrompts.filter((item) => (
+    item.conversationId === conversationId
+    && !visibleMessages.some((message) => (
+      message.role === 'user'
+      && item.submissionId !== undefined
+      && message.submissionId === item.submissionId
+    ))
+  ));
+  const pendingForTimeline = [...currentOptimisticPrompts];
+  const transcriptEntries: Array<
+    | { kind: 'message'; key: string; message: FlueConversationMessage }
+    | { kind: 'optimistic'; key: string; item: OptimisticPrompt }
+  > = [];
+  for (const message of visibleMessages) {
+    if (message.role === 'assistant' && message.submissionId) {
+      const optimisticIndex = pendingForTimeline.findIndex((item) => item.submissionId === message.submissionId);
+      if (optimisticIndex >= 0) {
+        const [item] = pendingForTimeline.splice(optimisticIndex, 1);
+        if (item) transcriptEntries.push({ kind: 'optimistic', key: item.id, item });
+      }
+    }
+    transcriptEntries.push({ kind: 'message', key: message.id, message });
+  }
+  for (const item of pendingForTimeline) transcriptEntries.push({ kind: 'optimistic', key: item.id, item });
 
   /**
    * Input:
@@ -360,7 +431,8 @@ export function App() {
    * - Ensures a fresh browser opens with a usable durable thread.
    */
   useEffect(() => {
-    if (initial.conversation) return;
+    if (initial.conversation || initializationStarted.current) return;
+    initializationStarted.current = true;
     void startNewConversation(model, mcpServerIds);
     // Initial preferences are intentionally read only once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -455,14 +527,39 @@ export function App() {
     setSubmissionAdmitted(false);
     setInput('');
     setUiError('');
+    const optimisticId = crypto.randomUUID();
+    setOptimisticPrompts((current) => [
+      ...current.filter((item) => !messages.some((message) => (
+        message.role === 'user'
+        && item.submissionId !== undefined
+        && message.submissionId === item.submissionId
+      ))),
+      {
+        id: optimisticId,
+        conversationId,
+        prompt,
+        model,
+        mcpServerIds: [...mcpServerIds],
+      },
+    ]);
     let admitted = false;
     try {
       const client = createFlueClient({ url: agentUrl });
       const messageBody = encodeConfiguredPrompt(prompt, model, mcpServerIds);
       await submitWithConversationLock(conversationId, {
         messageBody,
+        /**
+         * Input:
+         * - The encoded prompt and caller-owned idempotency key.
+         *
+         * Output:
+         * - Flue's durable admission receipt.
+         *
+         * What this function does:
+         * - Delivers one prompt so uncertain retries converge on the original submission.
+         */
         send: (body, idempotencyKey) => {
-          // Flue supports keyed direct admission at runtime; the current SDK declaration has not exposed it yet.
+          // A caller-chosen key lets ambiguous retries converge on the original durable submission.
           const options = {
             message: { kind: 'user' as const, body },
             idempotencyKey,
@@ -470,9 +567,24 @@ export function App() {
           return client.send(options);
         },
         wait: (admission) => client.wait(admission),
-        onAdmitted: () => {
+        /**
+         * Input:
+         * - The durable receipt returned for a new or recovered prompt.
+         *
+         * Output:
+         * - Updated optimistic correlation, SSE observation, title, and browser recency metadata.
+         *
+         * What this function does:
+         * - Connects direct SDK admission back to the React transcript before settlement.
+         */
+        onAdmitted: (admission) => {
           admitted = true;
           setSubmissionAdmitted(true);
+          setOptimisticPrompts((current) => current.map((item) => (
+            item.id === optimisticId ? { ...item, submissionId: admission.submissionId } : item
+          )));
+          // The first direct SDK send creates the conversation out-of-band; reconnect the dormant hook to its live SSE stream.
+          agent.refresh();
           // Message content remains in Flue; only title and recency metadata are saved in the browser.
           setConversations((current) => {
             const existing = current.find((conversation) => conversation.id === conversationId);
@@ -488,9 +600,14 @@ export function App() {
             return next;
           });
         },
+        // An uncertain admission may already exist, so refresh observation without clearing its recovery marker.
+        onAdmissionUncertain: () => agent.refresh(),
       });
     } catch (error) {
-      if (!admitted) setInput(prompt);
+      if (!admitted) {
+        setInput(prompt);
+        setOptimisticPrompts((current) => current.filter((item) => item.id !== optimisticId));
+      }
       setUiError(error instanceof Error ? error.message : 'The research request could not be submitted.');
     } finally {
       submissionPending.current = false;
@@ -755,21 +872,21 @@ export function App() {
           <div className="transcript" aria-live="polite">
             {!agent.historyReady || isCreating ? (
               <div className="loading-state"><span /><p>Opening the durable research record...</p></div>
-            ) : visibleMessages.length === 0 ? (
-              <div className="welcome-card">
-                <p className="welcome-number">01 / SEARCH</p>
-                <h2>Search technical documentation across vendors.</h2>
-                <p>Ask one agent to verify product behavior, architecture, APIs, security guidance, migrations, or best practices against official sources.</p>
+            ) : transcriptEntries.length === 0 ? (
+              <div className="empty-chat">
+                <p>Ask a documentation question</p>
                 <div className="example-list">
-                  {EXAMPLES.map((example) => <button type="button" onClick={() => setInput(example)} key={example}><span>Ask</span>{example}</button>)}
+                  {EXAMPLES.map((example) => <button type="button" onClick={() => setInput(example)} key={example}>{example}</button>)}
                 </div>
               </div>
-            ) : visibleMessages.map((message, index) => <ConversationMessage message={message} index={index} key={message.id} />)}
+            ) : transcriptEntries.map((entry, index) => entry.kind === 'message'
+              ? <ConversationMessage message={entry.message} index={index} key={entry.key} />
+              : <OptimisticUserMessage item={entry.item} index={index} key={entry.key} />)}
 
             {busy && !isCreating && (
               <div className="working-strip">
                 <span className="working-bars"><i /><i /><i /></span>
-                <div><strong>{statusText}</strong><p>Reasoning, tool calls, and answer tokens stream into this durable response.</p></div>
+                <strong>{statusText}</strong>
               </div>
             )}
           </div>

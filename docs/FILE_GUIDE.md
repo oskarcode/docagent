@@ -1,116 +1,103 @@
 # File Guide
 
-Risk means how broadly a mistake can affect the running application.
+## Runtime Source
 
-## Critical Entrypoints
+| File | Responsibility | Called by | Change risk |
+| --- | --- | --- | --- |
+| `src/app.ts` | Hono routes, API security headers, signed conversation creation, ownership middleware | Generated Worker entrypoint | High: affects auth and every request |
+| `src/agents/research-agent.ts` | Decodes per-prompt config, mounts MCP clients, runs the selected model | Flue durable delivery | High: affects durable execution and research behavior |
+| `src/lib/registry.ts` | Model/MCP allowlists, masks, prompt envelope codecs | Worker, agent, frontend, tests | High: shared protocol and trust boundary |
+| `src/env.ts` | Worker binding types | Runtime TypeScript compilation | Medium: must match Wrangler/generated bindings |
+| `src/index.ts` | Exports the Hono app to Flue/Vite | Generated Worker build | Low unless entrypoint behavior changes |
+| `src/skills/research-planning/SKILL.md` | Gives the agent a bounded documentation-research workflow | `ResearchAgent` through `skill()` | Medium: changes model behavior without changing TypeScript |
 
-### `src/app.ts`
+## Frontend Source
 
-- Role: configures Workers AI, defines the small Hono API, verifies conversation ownership, and mounts Flue.
-- Django/Python equivalent: `asgi.py`, middleware, `urls.py`, and small views.
-- Called by: the Flue/Cloudflare generated Worker entrypoint.
-- Calls into: `ResearchAgent`, registry guards, session helpers, and the Flue router.
-- Risk: High; mistakes can expose history or break every request.
-- Edit when: changing API routes, ownership policy, or provider settings.
-- If this breaks: check `/api/health`, Worker logs, bindings, then middleware path parsing.
+| File | Responsibility | Called by | Change risk |
+| --- | --- | --- | --- |
+| `frontend/src/main.tsx` | Creates the React root under StrictMode | Browser entrypoint | Low |
+| `frontend/src/App.tsx` | Conversation lifecycle, controls, optimistic prompts, direct Flue observation, rendering | `main.tsx` | High: central UI and state flow |
+| `frontend/src/activity.ts` | Projects structured message parts into answer text and Events | `App.tsx` | High: subtle model/tool ownership rules |
+| `frontend/src/conversation-lock.ts` | Web Lock admission, marker validation, idempotent replay, settlement | `App.tsx` | High: duplicate-prevention and recovery logic |
+| `frontend/src/styles.css` | Responsive visual system and component states | `main.tsx` | Medium: broad selector changes can affect mobile and accessibility |
+| `frontend/index.html` | HTML shell, install metadata, social metadata | Frontend Vite build | Low |
+| `frontend/public/_headers` | Static-asset browser security policy | Cloudflare Static Assets | High when changing CSP |
+| `frontend/public/manifest.webmanifest` | Installable application metadata | Browser | Low |
+| `frontend/public/icon.svg` | Application icon | HTML and manifest | Low |
+| `frontend/vite.config.ts` | React frontend build output | `npm run build:web` | Medium |
 
-### `src/agents/research-agent.ts`
+## Configuration And Build
 
-- Role: defines the only durable agent, per-prompt model, consolidated research skill, enabled MCP connections, and response metadata.
-- Django/Python equivalent: a stateful async service/orchestrator.
-- Called by: Flue's generated Durable Object router.
-- Calls into: registry parsing and Flue hooks.
-- Risk: High; hook order and MCP/model configuration affect every answer.
-- Edit when: changing research behavior, MCP setup, model options, durability, or metadata.
-- If this breaks: inspect the prompt envelope, signed-ID fallback, Flue build output, agent logs, and MCP activity trace.
+| File | Responsibility | Important rule |
+| --- | --- | --- |
+| `wrangler.jsonc` | Worker identity, vars, AI/assets/DO bindings, migrations, observability | Migration tags are append-only |
+| `vite.config.ts` | Flue plus Cloudflare Worker build | Keep `flue()` before `cloudflare()` |
+| `vitest.config.ts` | Test discovery and environment | Keep tests isolated from generated output |
+| `tsconfig.json` | TypeScript safety and path scope | Run `npm run check:types` after source changes |
+| `package.json` | Scripts and dependency graph | `npm run check` is the release gate |
+| `package-lock.json` | Reproducible dependency resolution | Commit dependency changes with this file |
+| `scripts/prepare-deploy.mjs` | Places frontend assets in generated Flue deployment output | Run only after successful builds |
+| `.gitignore` | Excludes downloaded/generated/local artifacts | Do not ignore source or lockfiles |
 
-### `frontend/src/App.tsx`
+## Tests
 
-- Role: owns the complete research desk, local thread index, configuration controls, Flue connection, transcript, and composer.
-- Django/Python equivalent: template, view context, and JavaScript controller combined.
-- Called by: `frontend/src/main.tsx`.
-- Calls into: `/api/conversations`, Flue React/SDK, registry helpers, and activity projection.
-- Risk: High; state transitions affect restoration and message submission.
-- Edit when: changing user flows, conversation history, model/source controls, or transcript layout.
-- If this breaks: inspect browser console/network, local storage, and `agent.status` handling.
+| File | Protected behavior |
+| --- | --- |
+| `test/activity.test.ts` | Reasoning ownership, Kimi fallback tags, tool display, final-tool answer boundary |
+| `test/conversation-lock.test.ts` | Cross-tab exclusion, marker replay, definitive rejection, settlement uncertainty |
+| `test/registry.test.ts` | Model/source allowlists, source masks, prompt envelope validation |
+| `test/security.test.ts` | Conversation signatures, ownership middleware, route validation, response headers |
 
-## Feature/Domain Files
+Prefer unit tests at these policy boundaries. Browser screenshots are useful for visual review but do not replace deterministic parsing, recovery, and security tests.
 
-### `src/lib/session.ts`
+## Documentation
 
-- Role: creates anonymous cookies and signs/verifies conversation ownership tokens.
-- Django/Python equivalent: signed-cookie/session middleware and a token utility.
-- Called by: `src/app.ts` and session tests.
-- Calls into: Web Crypto and registry mask/model validation.
-- Risk: High; this is the main security boundary.
-- Edit when: changing session lifetime, token format, or ownership rules.
-- If this breaks: run `test/session.test.ts` and inspect cookie/token components.
+| File | Audience |
+| --- | --- |
+| `README.md` | Operators and first-time contributors |
+| `docs/CODEBASE_OVERVIEW.md` | Engineers learning architecture and runtime flow |
+| `docs/FILE_GUIDE.md` | Maintainers deciding where to make a change |
+| `docs/TROUBLESHOOTING.md` | Developers diagnosing symptoms |
 
-### `src/lib/registry.ts`
+## Generated Or Machine-Local Artifacts
 
-- Role: central allowlists, generic MCP runtime metadata, compact legacy masks, and per-prompt configuration encoding.
-- Django/Python equivalent: settings constants plus Pydantic-style runtime guards.
-- Called by: Worker, agent, frontend, activity labels, and tests.
-- Calls into: no application modules.
-- Risk: High; IDs and prompt configuration are persisted in signed tokens, browser storage, and Flue history.
-- Edit when: adding/removing a supported model or official source.
-- If this breaks: run `test/registry.test.ts`; avoid changing existing source bit values.
+Do not edit these paths directly:
 
-### `frontend/src/activity.ts`
+- `node_modules/`: downloaded dependencies
+- `dist/`: generated Flue/Worker deployment output
+- `dist-web/`: generated React assets
+- `.wrangler/`: local Wrangler state
+- `.flue-vite/`: generated Flue build state
+- `.flue-vite.wrangler.jsonc`: generated local Wrangler configuration
+- `worker-configuration.d.ts`: generated Wrangler binding declarations
+- `.dev.vars`: local secrets
+- `*.log`: local command output
+- `.claude/`, `.codex/`, `.opencode/`, and `skills/`: local AI/session tooling ignored through `.git/info/exclude`
 
-- Role: turns Flue message parts into answer text and safe activity rows.
-- Django/Python equivalent: serializer/presenter for template context.
-- Called by: `App.tsx` and activity tests.
-- Calls into: the MCP registry for labels.
-- Risk: Medium; raw tool data must not leak into the trace.
-- Edit when: Flue changes part shapes or the UI needs another safe activity label.
-- If this breaks: run `test/activity.test.ts` and inspect a persisted message part.
+If generated output looks wrong, fix the owning source or configuration and regenerate it. Do not patch the generated copy.
 
-### `frontend/src/conversation-lock.ts`
+## Common Change Paths
 
-- Role: prevents two same-origin tabs from submitting concurrently to one Flue conversation.
-- Django/Python equivalent: a browser-side per-session mutex held through task completion.
-- Called by: `App.tsx` during prompt admission and settlement waiting.
-- Risk: High; without it Flue may join a prompt whose model/MCP configuration differs from the active submission.
-- Edit when: changing submission concurrency or supported browser behavior.
-- If this breaks: run `test/conversation-lock.test.ts` and test two tabs on the same conversation.
+### Add a model
 
-### `frontend/src/styles.css`
+Edit `MODEL_REGISTRY` in `src/lib/registry.ts`, update registry tests, then verify structured reasoning/answer behavior with that provider.
 
-- Role: global visual tokens, desktop layout, history rail, controls, transcript, composer, and responsive behavior.
-- Django/Python equivalent: static CSS served with templates.
-- Called by: `frontend/src/main.tsx`.
-- Risk: Medium; layout rules are shared across the single page.
-- Edit when: changing appearance or mobile behavior.
-- If this breaks: test widths above 900px, 621-900px, and at/below 620px.
+### Add an MCP source
 
-### `src/skills/research-planning/SKILL.md`
+Edit `MCP_REGISTRY`, assign a unique power-of-two bit, require HTTPS, add an optional environment override only if needed, and extend registry tests.
 
-- Role: the single research workflow and evidence-policy document, including search limits and citation checks.
-- Django/Python equivalent: a reusable service procedure loaded on demand.
-- Called by: `useSkill()` and the model's `activate_skill` tool.
-- Risk: High; it controls evidence collection.
-- Edit when: changing research budgets or evidence procedure.
-- If this breaks: verify the first substantive tool call is `activate_skill` and inspect subsequent MCP activity.
+### Change chat rendering
 
-## Infra/Config Files
+Start in `frontend/src/activity.ts` for ownership/projection rules. Change `App.tsx` only for presentation and interaction. Add regressions before modifying provider fallbacks.
 
-- `wrangler.jsonc`: `settings.py` plus deployment manifest; changes affect bindings, variables, assets, Durable Object migrations, and observability. Risk: High.
-- `vite.config.ts`: Worker bundler config; Flue scanning must precede Cloudflare snapshotting. Risk: High.
-- `frontend/vite.config.ts`: React build root/output and local API proxy. Risk: Medium.
-- `frontend/public/_headers`: security headers applied by Workers Static Assets without invoking Hono. Risk: Medium.
-- `scripts/prepare-deploy.mjs`: patches the generated Wrangler snapshot with frontend assets. Risk: High for deploys.
-- `package.json`: dependencies and canonical run/check/deploy commands. Risk: Medium.
-- `package-lock.json`: exact dependency graph; update through npm, not by hand.
-- `tsconfig.json`: strict TypeScript checking for Worker, frontend, tests, and configs. Risk: Medium.
-- `vitest.config.ts`: Node-based unit test discovery. Risk: Low.
-- `test/*.test.ts`: focused regression tests for registry, sessions, activity safety, and cross-tab submission locking. Risk: Low.
+### Change submission reliability
 
-## Generated/Downloaded Files
+Start in `frontend/src/conversation-lock.ts`. Preserve the exact payload and idempotency key during uncertain admission, hold the Web Lock through settlement, and clear only owned markers.
 
-- `node_modules/`: downloaded npm packages; safe to delete, regenerate with `npm install`.
-- `.wrangler/`: local Wrangler cache/state; usually safe to delete, regenerated by Wrangler/Vite commands.
-- `dist/`: Worker build and generated deployment snapshot; safe to delete, regenerate with `npm run build` and `npm run prepare:deploy`.
-- `dist-web/`: frontend assets; safe to delete, regenerate with `npm run build:web`.
+### Change API security
 
-Do not edit generated output to fix source behavior. Make the change in application/config source and rebuild.
+Start in `src/app.ts` and `frontend/public/_headers`. Verify Worker API headers and static-asset CSP independently.
+
+### Change durable infrastructure
+
+Update source/bindings, append a new Wrangler migration, build with Flue generation, and inspect the generated configuration before deployment.

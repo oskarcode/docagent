@@ -38,7 +38,16 @@ setProvider(cloudflareBindingProvider({
 // This router owns session isolation before handing approved requests to Flue.
 const app = new Hono<{ Bindings: Bindings }>();
 
-// Static Assets applies the same policy from `frontend/public/_headers`; API responses run here.
+/**
+ * Input:
+ * - Every Worker request and the next Hono middleware/handler.
+ *
+ * Output:
+ * - The normal response with baseline browser security headers attached.
+ *
+ * What this function does:
+ * - Gives API responses the same policy that Static Assets applies from `frontend/public/_headers`.
+ */
 app.use('*', async (c, next) => {
   await next();
   c.header('X-Content-Type-Options', 'nosniff');

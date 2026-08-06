@@ -56,6 +56,65 @@ function describeTool(toolName: string): string {
 
 /**
  * Input:
+ * - Reasoning text that may include provider-specific think tags.
+ *
+ * Output:
+ * - Clean reasoning text for the expandable Events panel.
+ *
+ * What this function does:
+ * - Removes transport markers without hiding the model's reasoning body.
+ */
+function reasoningDetail(text: string): string {
+  return text.replace(/<\/?think>/gi, '').trim();
+}
+
+/**
+ * Input:
+ * - One Kimi text part containing explicit complete or open think tags.
+ *
+ * Output:
+ * - Separate answer and reasoning strings.
+ *
+ * What this function does:
+ * - Keeps explicit reasoning in Events while leaving user-visible text in the answer lane.
+ */
+function splitThinking(text: string): { answer: string; reasoning: string } {
+  const complete = /^\s*<think>([\s\S]*?)<\/think>/i.exec(text);
+  if (complete) return { answer: text.slice(complete[0].length), reasoning: complete[1].trim() };
+
+  const open = /^\s*<think>([\s\S]*)$/i.exec(text);
+  if (open) return { answer: '', reasoning: open[1].trim() };
+
+  // Tags inside an answer or code example are user-visible content, not provider transport markers.
+  return { answer: text, reasoning: '' };
+}
+
+/**
+ * Input:
+ * - The owning message and one of its text parts.
+ *
+ * Output:
+ * - Stable answer/reasoning ownership for that part.
+ *
+ * What this function does:
+ * - Trusts Flue's structured part types and applies tag parsing only to unstructured Kimi fallback text.
+ */
+function textProjection(
+  message: FlueConversationMessage,
+  part: Extract<FlueConversationMessage['parts'][number], { type: 'text' }>,
+): { answer: string; reasoning: string } {
+  const model = typeof message.metadata?.model === 'string' ? message.metadata.model : '';
+  const isKimi = model.startsWith('kimi-');
+  const hasStructuredReasoning = message.parts.some((candidate) => candidate.type === 'reasoning');
+
+  // Flue part types are authoritative. Parse only explicit Kimi fallback markers; guessing from
+  // lifecycle state or an orphan closing marker can move content between Events and the answer.
+  if (message.role === 'assistant' && isKimi && !hasStructuredReasoning) return splitThinking(part.text);
+  return { answer: part.text, reasoning: '' };
+}
+
+/**
+ * Input:
  * - One persisted Flue conversation message.
  *
  * Output:
@@ -63,6 +122,7 @@ function describeTool(toolName: string): string {
  *
  * What this function does:
  * - Projects only display-safe fields while preserving running, complete, and error states.
+ * - Keeps model reasoning inside this explicit diagnostic projection and removes provider markers.
  */
 export function messageTrace(message: FlueConversationMessage): ResearchTraceItem[] {
   /**
@@ -76,12 +136,23 @@ export function messageTrace(message: FlueConversationMessage): ResearchTraceIte
    * - Converts only reasoning and dynamic-tool parts while discarding all other part types.
    */
   return message.parts.flatMap<ResearchTraceItem>((part, index) => {
-    if (part.type === 'reasoning' && part.text.trim()) {
+    if (part.type === 'reasoning' && reasoningDetail(part.text)) {
       return [{
         id: `${message.id}:reasoning:${index}`,
         kind: 'reasoning' as const,
-        label: 'Model reasoning',
-        detail: part.text,
+        label: 'Reasoning',
+        detail: reasoningDetail(part.text),
+        state: part.state === 'streaming' ? 'running' as const : 'complete' as const,
+      }];
+    }
+    if (part.type === 'text') {
+      const reasoning = textProjection(message, part).reasoning;
+      if (!reasoning) return [];
+      return [{
+        id: `${message.id}:text-reasoning:${index}`,
+        kind: 'reasoning' as const,
+        label: 'Reasoning',
+        detail: reasoning,
         state: part.state === 'streaming' ? 'running' as const : 'complete' as const,
       }];
     }
@@ -111,11 +182,13 @@ export function messageTrace(message: FlueConversationMessage): ResearchTraceIte
  * - Its visible text parts joined in stream order.
  *
  * What this function does:
- * - Separates final answer text from reasoning and tool activity.
+ * - Keeps only text emitted after the final tool boundary, preventing pre-tool narration from entering the answer.
+ * - Preserves every text part when the response used no tools.
  */
 export function messageText(message: FlueConversationMessage): string {
+  const lastToolIndex = message.parts.findLastIndex((part) => part.type === 'dynamic-tool');
   return message.parts
-    .filter((part): part is Extract<(typeof message.parts)[number], { type: 'text' }> => part.type === 'text')
-    .map((part) => part.text)
+    .flatMap((part, index) => part.type === 'text' && index > lastToolIndex ? [part] : [])
+    .map((part) => textProjection(message, part).answer)
     .join('');
 }

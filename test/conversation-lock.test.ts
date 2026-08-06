@@ -31,12 +31,16 @@ describe('conversation submission lock', () => {
     vi.stubGlobal('navigator', { locks: { request } });
     vi.stubGlobal('localStorage', memoryStorage());
     const send = vi.fn(async (_body: string, _idempotencyKey: string) => admission);
-    const wait = vi.fn(async (_admission: typeof admission) => undefined);
+    const callbackOrder: string[] = [];
+    const wait = vi.fn(async (_admission: typeof admission) => {
+      callbackOrder.push('wait');
+    });
 
     await expect(submitWithConversationLock('thread-1', {
       messageBody: 'first prompt',
       send,
       wait,
+      onAdmitted: () => callbackOrder.push('admitted'),
     })).resolves.toBeUndefined();
     expect(request).toHaveBeenCalledWith(
       'docagent:thread-1',
@@ -46,6 +50,7 @@ describe('conversation submission lock', () => {
     expect(send).toHaveBeenCalledOnce();
     expect(send).toHaveBeenCalledWith('first prompt', expect.any(String));
     expect(wait).toHaveBeenCalledWith(admission);
+    expect(callbackOrder).toEqual(['admitted', 'wait']);
     expect(localStorage.getItem(conversationSubmissionStorageKey('thread-1'))).toBeNull();
   });
 
@@ -180,11 +185,13 @@ describe('conversation submission lock', () => {
     const send = vi.fn(async () => {
       throw new FlueApiError(500, { error: { type: 'internal_error' } });
     });
+    const onAdmissionUncertain = vi.fn();
 
     await expect(submitWithConversationLock('thread-1', {
       messageBody: 'possibly admitted prompt',
       send,
       wait: vi.fn(async (_admission: typeof admission) => undefined),
+      onAdmissionUncertain,
     })).rejects.toBeInstanceOf(FlueApiError);
 
     const persisted = JSON.parse(
@@ -192,6 +199,7 @@ describe('conversation submission lock', () => {
     );
     expect(persisted.messageBody).toBe('possibly admitted prompt');
     expect(persisted.owner).toEqual(expect.any(String));
+    expect(onAdmissionUncertain).toHaveBeenCalledOnce();
   });
 
   it('clears recovery state after a definitive client rejection', async () => {
@@ -211,6 +219,7 @@ describe('conversation submission lock', () => {
       startedAt: Date.now(),
       messageBody: 'rejected prompt',
     }));
+    const onAdmissionUncertain = vi.fn();
 
     await expect(submitWithConversationLock('thread-1', {
       messageBody: 'next prompt',
@@ -218,13 +227,15 @@ describe('conversation submission lock', () => {
         throw new FlueApiError(400, { error: { type: 'invalid_request' } });
       }),
       wait: vi.fn(async (_admission: typeof admission) => undefined),
+      onAdmissionUncertain,
     })).rejects.toBeInstanceOf(FlueApiError);
 
     expect(localStorage.getItem(conversationSubmissionStorageKey('thread-1'))).toBeNull();
+    expect(onAdmissionUncertain).not.toHaveBeenCalled();
   });
 
   it.each(['failed', 'aborted'] as const)(
-    'does not mark a %s recovered prompt as admitted',
+    'correlates a %s recovered prompt before reporting its settlement',
     async (failure) => {
     const lock: Lock = { name: 'docagent:thread-1', mode: 'exclusive' };
     vi.stubGlobal('navigator', {
@@ -244,6 +255,7 @@ describe('conversation submission lock', () => {
       admission,
     }));
     const onAdmitted = vi.fn();
+    const onAdmissionUncertain = vi.fn();
 
     await expect(submitWithConversationLock('thread-1', {
       messageBody: 'failed prompt',
@@ -256,10 +268,49 @@ describe('conversation submission lock', () => {
         });
       }),
       onAdmitted,
+      onAdmissionUncertain,
     })).rejects.toBeInstanceOf(FlueExecutionError);
 
-    expect(onAdmitted).not.toHaveBeenCalled();
+    expect(onAdmitted).toHaveBeenCalledWith(admission);
+    expect(onAdmissionUncertain).not.toHaveBeenCalled();
     expect(localStorage.getItem(conversationSubmissionStorageKey('thread-1'))).toBeNull();
     },
   );
+
+  it('correlates a recovered prompt before waiting for its response', async () => {
+    const lock: Lock = { name: 'docagent:thread-1', mode: 'exclusive' };
+    vi.stubGlobal('navigator', {
+      locks: {
+        request: async <T,>(
+          _name: string,
+          _options: LockOptions,
+          callback: (lock: Lock | null) => T | PromiseLike<T>,
+        ) => callback(lock),
+      },
+    });
+    vi.stubGlobal('localStorage', memoryStorage());
+    localStorage.setItem(conversationSubmissionStorageKey('thread-1'), JSON.stringify({
+      owner: 'active-admission-key',
+      startedAt: Date.now(),
+      messageBody: 'active prompt',
+      admission,
+    }));
+    let finishWait: (() => void) | undefined;
+    const wait = vi.fn(() => new Promise<void>((resolve) => {
+      finishWait = resolve;
+    }));
+    const onAdmitted = vi.fn();
+
+    const submission = submitWithConversationLock('thread-1', {
+      messageBody: 'active prompt',
+      send: vi.fn(async () => admission),
+      wait,
+      onAdmitted,
+    });
+    await vi.waitFor(() => expect(onAdmitted).toHaveBeenCalledWith(admission));
+    expect(wait).toHaveBeenCalledWith(admission);
+
+    finishWait?.();
+    await submission;
+  });
 });

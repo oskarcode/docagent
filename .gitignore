@@ -1,11 +1,16 @@
+# Downloaded dependencies and reproducible build output.
 node_modules/
 dist/
 dist-web/
+
+# Local Cloudflare/Flue working state and generated declarations.
 .wrangler/
 .flue-vite/
 .flue-vite.wrangler.jsonc
 .dev.vars
 worker-configuration.d.ts
+
+# Machine-local logs, OS metadata, and AI coding-session artifacts.
 *.log
 .DS_Store
 SESSION_CONTEXT.md

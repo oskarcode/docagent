@@ -1,72 +1,8 @@
 # Troubleshooting
 
-Start with `npm run check`. It type-checks, runs unit tests, builds React, and builds the Worker (`package.json`). For production-only failures, inspect Cloudflare Worker logs/traces because observability is enabled in `wrangler.jsonc`.
+Start with the symptom, reproduce it with the smallest relevant command, and inspect source before generated output.
 
-## Symptom -> First Checks
-
-| Symptom | First checks |
-|---|---|
-| Blank page | Browser console, `frontend/src/main.tsx`, `frontend/src/App.tsx`, and `dist-web/` build |
-| `/api/*` returns the SPA HTML | `wrangler.jsonc` `run_worker_first`, frontend proxy, and `scripts/prepare-deploy.mjs` |
-| `POST /api/conversations` returns `400` | Request JSON plus `isModelId()` and `isMcpServerIdArray()` in `src/lib/registry.ts` |
-| Agent route returns `401` | HttpOnly cookie, signed ID, and `verifyConversationToken()` in `src/lib/session.ts` |
-| History does not restore | Browser local-storage pointer, `useFlueAgent` URL, ownership response, and `agent.historyReady` |
-| Wrong model/source after reopening | Current local metadata, prompt envelope parsing, and assistant response metadata |
-| Another tab cannot submit | The active conversation lock is intentionally held until the first submission settles; inspect `conversation-lock.ts` only if no work is active |
-| Model request fails | Workers AI binding, `AI_GATEWAY_ID`, model specifier, account limits, and Worker logs |
-| Cloudflare evidence is missing | Source checkbox, `cloudflare-docs` MCP connection, skill activation, and activity trace |
-| AWS evidence is missing | Source checkbox, `aws-knowledge` MCP connection, skill activation, and activity trace |
-| Raw tool output appears in UI | `frontend/src/activity.ts` projection and `test/activity.test.ts` |
-| Deploy cannot locate assets | Run `npm run check`, then inspect `dist-web/` and generated `dist/.../wrangler.json` after `npm run prepare:deploy` |
-| Mobile layout clips controls | Test `frontend/src/styles.css` at/below 620px and between 621-900px |
-
-## Common Failure Modes
-
-### Auth/access failures
-
-- This app has no user login. A `401` means the browser session cookie does not validate the signed conversation ID.
-- Confirm the cookie name is `tech_docs_flue_session` and that HTTPS responses set `Secure`.
-- Confirm the conversation ID has four dot-separated segments: model, source mask, UUID, signature.
-- Do not weaken verification to recover old malformed pointers; clear the stale browser pointer and create a new thread.
-- Relevant files: `src/lib/session.ts`, `src/app.ts`, and `test/session.test.ts`.
-
-### Deployment/config drift
-
-- The Worker and frontend are separate Vite builds.
-- `npm run deploy` must run `check`, `prepare:deploy`, then Wrangler using the generated config.
-- `scripts/prepare-deploy.mjs` is required because Flue's Worker snapshot does not include the separately built React assets.
-- Never edit `dist/.../wrangler.json` manually; rebuild and patch it through scripts.
-- Keep applied Durable Object migration tags unchanged.
-
-### MCP connection or evidence failures
-
-- Confirm the requested vendor source is enabled in the current thread.
-- Confirm public URLs in `MCP_REGISTRY` or their environment overrides.
-- If authentication is required, confirm Worker secrets `CF_DOCS_VECTORIZE_MCP_TOKEN` or `AWS_KNOWLEDGE_MCP_TOKEN` without printing values.
-- Confirm the trace starts with `Activate skill` before an MCP documentation search.
-- MCP connections are optional, so connection failure may produce an evidence-gap answer rather than a Worker crash.
-
-### Model and AI Gateway failures
-
-- Confirm the model ID exists in `MODEL_REGISTRY` and its specifier starts with `cloudflare/@cf/`.
-- Confirm the `AI` binding and `AI_GATEWAY_ID` are present in the deployed config.
-- Check Cloudflare account model availability, limits, gateway policies, and Worker logs.
-- Model changes apply to the next prompt. Confirm its user/assistant badges and `useDelivery()` parsing if the old model remains active.
-- Flue reads model and MCP hooks once per submission, so the frontend rejects a second same-conversation prompt instead of allowing a turn-boundary join.
-- If a tab closes or loses the admission response, the next submit replays the persisted prompt with the same Flue idempotency key and waits for that settlement before sending new work.
-
-### Browser history surprises
-
-- Local storage contains pointers and labels, not message content.
-- Flue Durable Objects contain message history.
-- Deleting a row removes only the pointer from that browser.
-- Clearing browser storage loses the convenient index but does not issue server-side deletion.
-- Changing model or sources updates local metadata and the next prompt while preserving the current conversation ID.
-- Disabled sources are unavailable to future prompts, but their earlier tool results remain part of the durable history.
-
-### Build or test failures
-
-Run the failing layer separately:
+## Validation Commands
 
 ```bash
 npm run check:types
@@ -75,20 +11,154 @@ npm run build:web
 npm run build
 ```
 
-- Registry failures: inspect `src/lib/registry.ts` and `test/registry.test.ts`.
-- Session failures: inspect Web Crypto/token format and `test/session.test.ts`.
-- Activity failures: inspect Flue message-part assumptions and `test/activity.test.ts`.
-- Conversation-lock failures: inspect Web Locks support and `test/conversation-lock.test.ts`.
-- React build failures: inspect browser imports and JSX in `frontend/src/`.
-- Worker build failures: inspect Flue hooks, `vite.config.ts`, and `wrangler.jsonc`.
+`npm run check` runs all four in release order. `npm run deploy` adds generated-output preparation and Wrangler deployment after they pass.
 
-## Ask-This-Question Prompts
+## React Error #185 Or Maximum Update Depth
 
-- "Which function validates the model and source JSON for conversation creation?"
-- "Which middleware owns the signed conversation check before Flue routing?"
-- "Which functions encode and decode per-prompt model and MCP configuration?"
-- "Which component saves browser conversation pointers, and where are messages actually stored?"
-- "Which function prevents raw MCP output from appearing in the activity trace?"
-- "Which function prevents concurrent tabs from joining differently configured prompts?"
-- "Which build creates `dist-web`, and which script attaches it to the generated Worker config?"
-- "Which Wrangler migration removed the retired specialist Durable Object classes?"
+Symptoms:
+
+- The production UI crashes after streaming begins.
+- The console reports minified React error `#185` or a maximum update-depth loop.
+- Re-rendering accelerates as new Flue parts arrive.
+
+Checks:
+
+- Confirm `App.tsx` renders `agent.messages` directly.
+- Look for an effect that depends on streamed messages and calls `setState` on every snapshot.
+- Confirm optimistic prompts are reconciled during render rather than copied into another message-state array.
+- Confirm conversation initialization uses the `initializationStarted` ref so React StrictMode does not create two conversations.
+
+Why:
+
+SSE updates produce frequent new snapshots. Mirroring each snapshot into React state creates a second update source and can repeatedly retrigger the effect.
+
+## Prompt Appears Twice
+
+Checks:
+
+- Inspect the persisted Flue messages for matching `submissionId` metadata.
+- Inspect `localStorage` for `docagent_active_submission:<conversationId>`.
+- Confirm `submitWithConversationLock` sends and replays with the same idempotency key.
+- Confirm the Web Lock is held until `client.wait(admission)` settles.
+
+Do not fix duplicate display by deleting durable history or removing replay. First determine whether the duplicate is persisted or only optimistic presentation.
+
+## Prompt Disappears While Sending
+
+Checks:
+
+- Confirm `onAdmitted` assigns the Flue `submissionId` to the optimistic prompt.
+- Confirm `OptimisticUserMessage` is rendered when durable history has not caught up.
+- Confirm reconciliation finds the matching `submissionId` on the durable user message.
+- Confirm the prompt is not removed by an effect tied to every message snapshot.
+
+## Another Tab Reports A Busy Conversation
+
+This is expected while another same-origin tab holds the conversation Web Lock through durable settlement. Wait for the active prompt to finish.
+
+If no tab is active:
+
+- Close stale tabs and retry.
+- Check whether the browser implements `navigator.locks`.
+- Inspect the active marker in `localStorage`.
+- Do not manually delete a marker while a request may still be settling; retry logic uses it to avoid duplicate jobs.
+
+## Admission Failed But Work May Still Be Running
+
+HTTP 408 and 5xx errors are intentionally treated as uncertain. The next locked submission replays the original body with the original idempotency key, allowing Flue to return the existing admission instead of starting duplicate work.
+
+A non-timeout 4xx response is definitive and clears the owned marker. If this classification changes, update `conversation-lock.ts` and its regression tests together.
+
+## Reasoning Is Missing From Events
+
+Checks:
+
+- Inspect the Flue message parts for `reasoning` entries.
+- Confirm `messageTrace` handles the provider's structured part type.
+- For Kimi only, check whether explicit `<think>` tags arrived inside an assistant `text` part.
+- Do not add broad tag parsing for every model; literal tags from non-Kimi models are valid answer content.
+
+Provider reasoning should be displayed in **Events**, not appended to the final answer.
+
+## Pre-Tool Narration Appears In The Final Answer
+
+Checks:
+
+- Inspect the assistant part order.
+- Confirm `messageText` finds the final `tool-call` or `tool-result` boundary.
+- Confirm only text parts after that boundary are projected when tools were used.
+- Run `test/activity.test.ts` after changing projection logic.
+
+When no tools run, all assistant text parts remain part of the answer.
+
+## Tool Events Leak Raw Or Oversized Data
+
+`messageTrace` should display only safe status summaries and sanitized error messages. Do not render arbitrary tool arguments or raw MCP results into the browser. Add an explicit formatter for any new tool part shape.
+
+## Conversation Creation Returns 400
+
+Checks:
+
+- Ensure `model` exactly matches a `MODEL_REGISTRY` ID.
+- Ensure `mcpServerIds` is a non-empty array of known source IDs.
+- Check JSON syntax and `Content-Type: application/json`.
+- Run `test/registry.test.ts` and `test/security.test.ts`.
+
+## Conversation Routes Return 401
+
+The conversation ID is absent, malformed, or has an invalid signature.
+
+Checks:
+
+- Confirm `CONVERSATION_SIGNING_KEY` is configured and at least 32 characters.
+- Do not alter the signed ID stored by the browser.
+- If the signing key was rotated, existing browser IDs are no longer valid; start a new conversation.
+- Confirm the route is under `/api/agents/research/:conversationId`.
+
+## Model Or MCP Request Fails
+
+Checks:
+
+- Verify the model/source IDs through `src/lib/registry.ts`.
+- Verify `AI_GATEWAY_ID` and Workers AI binding configuration.
+- Verify MCP endpoints resolve over HTTPS.
+- Check optional endpoint overrides for typos.
+- Inspect Worker logs and traces for Flue attempt details.
+- Confirm the agent's three-minute timeout is appropriate for the query.
+
+Do not bypass allowlists by accepting arbitrary client-provided model aliases or MCP URLs.
+
+## Frontend Loads But API Routes Return The SPA
+
+Checks:
+
+- Confirm `wrangler.jsonc` has `run_worker_first: ["/api/*"]`.
+- Confirm frontend output exists at `dist-web/` before deployment preparation.
+- Confirm `scripts/prepare-deploy.mjs` copied assets into the generated Flue tree.
+- Inspect the generated Wrangler file, but fix root configuration rather than editing generated output.
+
+## Build Or Deployment Uses Stale Generated Files
+
+Remove only reproducible generated output after confirming no local source is stored there, then rebuild. Safe candidates are `dist/`, `dist-web/`, `.flue-vite/`, and `.wrangler/`; never remove source, lockfiles, `.dev.vars`, or migration history as routine cleanup.
+
+Use the project script instead of manually invoking generated entrypoints:
+
+```bash
+npm run deploy
+```
+
+## Durable Object Migration Error
+
+Checks:
+
+- Compare class bindings with Flue-generated class names.
+- Verify every new durable class has a new migration tag.
+- Never rename, reorder, or rewrite an already-applied migration.
+- Historical deleted classes in older tags are expected production history.
+
+## Useful Production Checks
+
+- Open `https://docagent.oskarcode.com/api/health` and expect `{"ok":true}`.
+- Verify the HTML references the latest hashed frontend assets after deployment.
+- Use Wrangler logs/traces to correlate a failed prompt with its durable attempt.
+- Reproduce provider-specific rendering with the focused Vitest files before changing shared projection code.

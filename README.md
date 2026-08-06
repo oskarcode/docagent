@@ -1,151 +1,156 @@
 # DocAgent
 
-<img src="frontend/public/logo.svg" alt="DocAgent logo" width="96" />
-
-A single durable Flue agent that answers Cloudflare and AWS technical questions from current official documentation. The application is a React frontend and Hono API deployed together on Cloudflare Workers.
+DocAgent is a durable documentation-research chat application built with React, Flue, Hono, and Cloudflare Workers. Each prompt can choose one curated Workers AI model and one or more official documentation MCP servers. Flue persists the conversation and streams structured reasoning, tool activity, and final answer parts back to the browser.
 
 Production: https://docagent.oskarcode.com
 
-Public source: https://github.com/oskarcode/docagent
+## Mental Model
 
-## Start Here (Python/Django Mental Model)
+For Python or Django developers:
 
-> **Why this comparison exists:** I am more familiar with Python and Django, so I use their concepts as a personal learning bridge for this TypeScript project. The comparisons below are approximate mental models, not claims that the frameworks behave identically.
+| This project | Python/Django analogy |
+| --- | --- |
+| `src/app.ts` | `urls.py` plus middleware and lightweight views |
+| `src/agents/research-agent.ts` | A service class or durable Celery task definition |
+| `src/lib/registry.ts` | Typed settings, allowlists, and request serializers |
+| `frontend/src/App.tsx` | A browser-side template, form controller, and SSE consumer |
+| Flue Durable Object | A per-conversation database record plus durable worker |
+| MCP server | A remote, model-callable documentation adapter |
+| `wrangler.jsonc` | Deployment settings and infrastructure bindings |
 
-| This project | Django/Python equivalent |
-|---|---|
-| `src/app.ts` Worker entrypoint | `asgi.py` plus `urls.py`, middleware, and small views |
-| Hono route handler | Django view or FastAPI endpoint function |
-| `ResearchAgent` | A durable async service/orchestrator |
-| Flue Durable Object history | A session-scoped persistent service; not a Django ORM model |
-| `frontend/src/App.tsx` | A Django template plus browser-side view state; React stays active in the browser |
-| TypeScript `type` | Python type hint or `TypedDict` intent; it does not validate network input |
-| `package.json` | `pyproject.toml` dependencies plus command aliases |
-| `package-lock.json` | A pinned Python dependency lockfile |
-| `wrangler.jsonc` | `settings.py` plus the hosting manifest |
-| `test/*.test.ts` | pytest test modules |
+The important difference from a normal request/response application is that prompt execution outlives the initiating HTTP request. The browser submits work, Flue durably runs it, and the UI observes persisted conversation state.
 
-## What You Actually Maintain
+## Runtime Flow
 
-1. `src/agents/`: agent behavior, per-prompt configuration, MCP connections, and durability policy.
-2. `src/lib/`: model/source allowlists and anonymous session security.
-3. `frontend/src/`: conversation UI, safe activity projection, and responsive styling.
-4. `src/skills/research-planning/`: research procedure and evidence policy.
-5. `src/app.ts` and `wrangler.jsonc`: API boundary and Cloudflare runtime configuration.
+1. The browser creates an anonymous conversation through `POST /api/conversations`.
+2. The Worker validates the model and documentation-source selection.
+3. The Worker signs `<model>.<mcp-mask>.<uuid>` with `CONVERSATION_SIGNING_KEY` and returns the opaque ID.
+4. The browser wraps each visible prompt in a validated `<docagent-config>` envelope containing that prompt's model and source choices.
+5. `submitWithConversationLock` acquires a same-origin Web Lock, records an idempotency marker, and submits through the Flue SDK.
+6. `ResearchAgent` decodes the envelope, mounts only the selected MCP clients, and invokes the selected Workers AI model.
+7. Flue persists and streams structured message parts.
+8. The UI shows reasoning and tool calls inside **Events** and renders only post-tool final text as the answer.
 
-Usually do not edit `node_modules/`, `.wrangler/`, `dist/`, or `dist-web/`. They are downloaded or generated. Do not rewrite an applied migration tag in `wrangler.jsonc`; add a new migration instead.
-
-## What This Project Does
-
-- Creates an anonymous HttpOnly browser session and signs each conversation ID for that session (`src/lib/session.ts`).
-- Selects one curated Workers AI model and approved documentation sources independently for each prompt (`src/lib/registry.ts`).
-- Holds one browser-wide lock per conversation through durable settlement and recovers ambiguous admissions with a persisted Flue idempotency key (`frontend/src/conversation-lock.ts`).
-- Runs one `ResearchAgent` that activates a research skill and directly queries enabled Cloudflare/AWS MCP tools (`src/agents/research-agent.ts`).
-- Streams answers, reasoning status, and sanitized tool labels to React without displaying raw tool output (`frontend/src/activity.ts`).
-- Stores messages durably through Flue while the browser stores up to 30 thread pointers in `localStorage` (`frontend/src/App.tsx`).
-
-## Architecture At A Glance
+## Project Layout
 
 ```text
-React browser
-  | POST /api/conversations
-  | /api/agents/research/:signedConversationId/*
-  v
-Hono Worker: validation + anonymous ownership check
-  v
-Flue ResearchAgent Durable Object
-  +--> Workers AI binding --> AI Gateway --> prompt-selected model
-  +--> registry-selected public MCP sources
-  v
-Durable streamed response and history --> React transcript
+frontend/
+  index.html                 Browser HTML shell
+  public/                    Static manifest, icon, and asset security headers
+  src/App.tsx                Chat UI, direct Flue observation, optimistic prompts
+  src/activity.ts            Answer/reasoning/tool projection
+  src/conversation-lock.ts   Cross-tab admission and replay protection
+  src/styles.css             Responsive application styling
+src/
+  app.ts                     Hono API, security headers, signed ownership
+  agents/research-agent.ts   Durable research agent and MCP/model routing
+  lib/registry.ts            Shared model/MCP registries and prompt envelope
+  skills/                    Agent planning guidance
+scripts/prepare-deploy.mjs   Copies static assets beside Flue build output
+test/                        Vitest unit and route tests
+wrangler.jsonc               Cloudflare bindings, migrations, assets, observability
 ```
 
-There are no vendor specialist agents or delegation layer. Evidence: `src/agents/research-agent.ts` exports only `ResearchAgent`; migration `v4` in `wrangler.jsonc` removes the retired specialist Durable Object classes.
+See `docs/CODEBASE_OVERVIEW.md`, `docs/FILE_GUIDE.md`, and `docs/TROUBLESHOOTING.md` for deeper maintenance guidance.
 
-## Traffic Flow (Input -> Output)
+## Local Development
 
-1. `frontend/src/App.tsx` restores a valid local conversation pointer or calls `POST /api/conversations`.
-2. `src/app.ts` validates the model/source selection and `src/lib/session.ts` creates a signed ID bound to the HttpOnly browser session.
-3. Ownership middleware verifies every request below `/api/agents/research/:id` before handing it to Flue.
-4. React acquires an exclusive same-origin conversation lock, adds validated model/source routing metadata, and admits the prompt.
-5. `ResearchAgent` selects the submission-scoped model and MCP connections, then mounts the consolidated `research-planning` skill.
-6. Flue invokes Workers AI and relevant official-documentation tools, persists message parts, and streams the response.
-7. React holds the lock until Flue records settlement, then renders answer text, per-message configuration badges, and sanitized reasoning/tool activity separately.
+Requirements:
 
-## Hosting and Deployment
+- Node.js 22 or compatible current runtime
+- npm
+- A Cloudflare account with Workers AI access
+- A secret `CONVERSATION_SIGNING_KEY` of at least 32 characters
 
-- Runtime: Cloudflare Workers (`src/app.ts`).
-- Durable storage: Flue-generated SQLite Durable Object binding (`wrangler.jsonc`).
-- Static frontend: Cloudflare Workers Static Assets from `dist-web/`.
-- AI: Workers AI through AI Gateway ID `tech-docs-langgraph-worker`.
-- Observability: Worker logs and traces enabled in `wrangler.jsonc`.
-- Full validation: `npm run check`.
-- Deploy: `npm run deploy`.
-- Environments: local Vite development and the production Worker URL above.
-
-`npm run deploy` validates both applications, builds them, updates the generated deployment snapshot through `scripts/prepare-deploy.mjs`, then runs Wrangler.
-
-## Security Model
-
-- Auth boundary: anonymous browser-session isolation, not login-based user authentication (`src/lib/session.ts`).
-- Ownership: HMAC-signed conversation IDs are valid only with the browser session that created them.
-- Cookie: HttpOnly, `SameSite=Strict`, 30-day lifetime, and `Secure` on HTTPS.
-- Allowlists: conversation JSON, prompt routing metadata, and local-storage values must match `MODEL_REGISTRY` and `MCP_REGISTRY`.
-- Response hardening: Worker-generated APIs and Static Assets both set content-type, referrer, and browser-feature policy headers.
-- Optional secrets: `CF_DOCS_VECTORIZE_MCP_TOKEN` and `AWS_KNOWLEDGE_MCP_TOKEN`; store values as Worker secrets, never in source.
-- Public endpoint overrides: `CF_DOCS_VECTORIZE_MCP_URL` and `AWS_KNOWLEDGE_MCP_URL` in `wrangler.jsonc`.
-- Important limit: anyone using the same browser session can reopen its locally indexed conversations.
-
-## APIs and Interfaces
-
-- `GET /api/health`: confirms the Worker router is reachable without invoking AI.
-- `POST /api/conversations`: accepts `{ model, mcpServerIds }` and returns a signed conversation ID.
-- `/api/agents/research/:conversationId/*`: Flue-managed message, history, stream, cancel, and durable-agent routes protected by ownership middleware.
-- Non-API navigation: Cloudflare Static Assets serves the frontend and SPA fallback without invoking Hono.
-
-## Frontend Overview
-
-- `App.tsx` owns the current model/sources, local conversation index, Flue connection, transcript, and composer.
-- Changing the model or sources keeps the current thread and applies to the next prompt; active streams keep their original configuration.
-- A conversation accepts one browser submission at a time across same-origin tabs because Flue model/MCP hooks are submission-scoped. Lost admission responses replay the exact keyed payload instead of creating a second delivery.
-- Each prompt and answer shows the model/source configuration used, making within-thread comparisons visible after refresh.
-- Deleting a conversation removes its browser pointer, not Flue's durable messages.
-- `activity.ts` intentionally exposes tool names and selected input details, never raw tool responses.
-
-## Adding a Public MCP Source
-
-Add one entry to `MCP_REGISTRY` in `src/lib/registry.ts` with a unique ID, label, HTTPS URL, power-of-two `bit`, and optional environment override names. Set `defaultEnabled: false` unless every new conversation should mount it. The frontend selector and `ResearchAgent` connection loop are registry-driven, so they require no source-specific branch.
-
-The current compact mask supports approximately 30 sources. Keep existing bit values stable because signed conversation IDs persist them.
-
-## Quick Start
+Install and validate:
 
 ```bash
 npm install
+npm run check
+```
+
+Run the integrated Worker development server:
+
+```bash
 npm run dev
 ```
 
-In a second terminal, start the frontend development server:
+Run only the frontend development server when working on browser rendering:
 
 ```bash
 npm run dev:web
 ```
 
-Open the frontend URL printed by Vite, normally `http://localhost:5174`. Run all checks with:
+Useful checks:
 
 ```bash
-npm run check
+npm run check:types
+npm test
+npm run build:web
+npm run build
 ```
 
-## Troubleshooting Jump Table
+## Configuration
 
-- If thread creation returns `400`, inspect request validation in `src/app.ts` and registry values in `src/lib/registry.ts`.
-- If a restored thread returns `401`, inspect the session cookie and token verification in `src/lib/session.ts`.
-- If a model works locally but not after deployment, inspect Workers AI/AI Gateway bindings and Worker logs.
-- If official sources are absent, inspect enabled source IDs, MCP environment values, and the activity trace.
-- If the page is blank or API requests hit the SPA, inspect `frontend/vite.config.ts`, `wrangler.jsonc`, and `scripts/prepare-deploy.mjs`.
-- See `docs/TROUBLESHOOTING.md` for detailed checks.
+Non-secret defaults live in `wrangler.jsonc`:
 
-## License
+- `AI_GATEWAY_ID`
+- `CF_DOCS_VECTORIZE_MCP_URL`
+- `AWS_KNOWLEDGE_MCP_URL`
 
-MIT. See `LICENSE`.
+Required production secret:
+
+```bash
+npx wrangler secret put CONVERSATION_SIGNING_KEY
+```
+
+Optional endpoint overrides are `CF_DOCS_VECTORIZE_MCP_URL` and `AWS_KNOWLEDGE_MCP_URL`. Do not commit `.dev.vars` or secret values.
+
+The current model allowlist is defined once in `src/lib/registry.ts`:
+
+- Kimi K2.6
+- Kimi K2.7 Code
+- GLM-5.2, the fresh-browser default
+- GLM-4.7 Flash
+- Gemma 4 26B
+- GPT-OSS 120B
+
+The documentation-source registry currently exposes official Cloudflare and AWS MCP endpoints. Add or remove sources through the registry rather than introducing route-specific conditionals.
+
+## Deployment
+
+Authenticate Wrangler, set the signing secret, then run:
+
+```bash
+npm run deploy
+```
+
+The deployment command runs all checks, prepares the generated Flue/asset layout, and deploys the generated Wrangler configuration. `dist/`, `dist-web/`, `.flue-vite/`, `.wrangler/`, `.flue-vite.wrangler.jsonc`, and `worker-configuration.d.ts` are generated or machine-local artifacts and must not be edited by hand.
+
+Cloudflare Durable Object migration tags are append-only production history. Never rename or rewrite an applied tag; add a new migration when durable classes change.
+
+## Security And Reliability
+
+- Conversation IDs are signed and ownership middleware rejects forged or malformed IDs.
+- Model and MCP values are allowlisted before they reach agent configuration.
+- Per-prompt metadata is validated from a strict envelope, retained for durable replay, and explicitly identified to the model as routing metadata rather than user instructions.
+- Web Locks serialize submissions across same-origin tabs.
+- Local idempotency markers replay uncertain admissions with the original body and key.
+- Flue `idempotencyKey` handling prevents duplicate durable jobs.
+- Browser and Worker responses carry restrictive security headers.
+- Tool output is sanitized before display.
+- All selected MCP URLs must use HTTPS.
+- Agent attempts and execution time are bounded.
+
+## Maintenance Rules
+
+- Preserve structured Flue part types; do not flatten reasoning, tool calls, and answers into one text blob.
+- Keep pre-tool narration out of the final answer by retaining the final-tool boundary in `messageText`.
+- Keep optimistic UI reconciliation in render-time derivation; setting state on every streamed snapshot can cause React error `#185`.
+- Keep the initialization ref that protects conversation creation under React StrictMode.
+- Do not remove lockfiles, Durable Object migrations, deployment bindings, or signed-ID parsing without an explicit migration plan.
+- Add focused regression tests when changing parsing, admission recovery, security validation, or message ownership.
+
+## Public Source
+
+https://github.com/oskarcode/docagent

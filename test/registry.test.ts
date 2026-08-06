@@ -13,6 +13,7 @@ import {
   MCP_REGISTRY,
   modelById,
   MODEL_REGISTRY,
+  resolveMcpServerUrl,
 } from '../src/lib/registry.ts';
 
 describe('research registries', () => {
@@ -98,5 +99,22 @@ describe('research registries', () => {
     expect(new Set(MCP_REGISTRY.map((server) => server.bit)).size).toBe(MCP_REGISTRY.length);
     expect(MCP_REGISTRY.every((server) => server.bit > 0 && (server.bit & (server.bit - 1)) === 0)).toBe(true);
     expect(MCP_REGISTRY.every((server) => new URL(server.url).protocol === 'https:')).toBe(true);
+  });
+
+  /**
+   * Input:
+   * - The Cloudflare source definition plus secure, plaintext, and malformed overrides.
+   *
+   * Output:
+   * - The secure endpoint and assertions that unsafe overrides are rejected.
+   *
+   * What this function does:
+   * - Prevents environment configuration from bypassing the registry's HTTPS trust boundary.
+   */
+  it('accepts only valid HTTPS MCP endpoint overrides', () => {
+    const server = MCP_REGISTRY[0];
+    expect(resolveMcpServerUrl(server, 'https://docs.example.com/mcp')).toBe('https://docs.example.com/mcp');
+    expect(() => resolveMcpServerUrl(server, 'http://docs.example.com/mcp')).toThrow('must use HTTPS');
+    expect(() => resolveMcpServerUrl(server, 'not a URL')).toThrow();
   });
 });
