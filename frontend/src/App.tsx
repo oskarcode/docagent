@@ -1,5 +1,5 @@
 // React owns browser state, effects, deferred rendering, and event types.
-import { useDeferredValue, useEffect, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useDeferredValue, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 
 // Flue restores durable messages and sends prompts to the selected agent URL.
 import { useFlueAgent, type FlueConversationMessage } from '@flue/react';
@@ -11,9 +11,10 @@ import remarkGfm from 'remark-gfm';
 
 // Shared runtime registries keep browser choices consistent with Worker validation.
 import {
-  conversationConfigFromId,
+  decodeConfiguredPrompt,
   DEFAULT_MCP_SERVER_IDS,
   DEFAULT_MODEL_ID,
+  encodeConfiguredPrompt,
   isMcpServerIdArray,
   isModelId,
   MCP_REGISTRY,
@@ -25,6 +26,7 @@ import {
 
 // Activity helpers separate final answer text from the sanitized reasoning/tool trace.
 import { messageText, messageTrace } from './activity.ts';
+import { submitWithConversationLock } from './conversation-lock.ts';
 
 // Local-storage keys retain browser preferences and pointers to durable Flue conversations.
 const STORAGE_KEY = 'tech_docs_flue_conversation';
@@ -84,18 +86,13 @@ function storedPreferences(): Pick<ConversationRecord, 'model' | 'mcpServerIds'>
  * - A normalized conversation pointer, or null.
  *
  * What this function does:
- * - Verifies metadata against the immutable model and source configuration encoded in the signed ID.
+ * - Validates mutable browser metadata independently from the signed conversation ID.
  */
 function parseConversation(value: unknown): ConversationRecord | null {
   try {
     if (!value || typeof value !== 'object') return null;
     const record = value as Record<string, unknown>;
     if (typeof record.id !== 'string' || !isModelId(record.model) || !isMcpServerIdArray(record.mcpServerIds)) return null;
-    const tokenConfig = conversationConfigFromId(record.id);
-    if (
-      tokenConfig.model !== record.model
-      || tokenConfig.mcpServerIds.join(',') !== record.mcpServerIds.join(',')
-    ) return null;
     const now = Date.now();
     return {
       id: record.id,
@@ -184,6 +181,24 @@ function conversationTitle(prompt: string): string {
 
 /**
  * Input:
+ * - One durable Flue message.
+ *
+ * Output:
+ * - The validated model/source selection used for that message, when available.
+ *
+ * What this function does:
+ * - Reads user configuration from the prompt envelope and assistant configuration from response metadata.
+ */
+function messageConfiguration(message: FlueConversationMessage) {
+  if (message.role === 'user') return decodeConfiguredPrompt(messageText(message));
+  const metadata = message.metadata;
+  return metadata && isModelId(metadata.model) && isMcpServerIdArray(metadata.mcpServerIds)
+    ? { model: metadata.model, mcpServerIds: metadata.mcpServerIds }
+    : null;
+}
+
+/**
+ * Input:
  * - An approved Workers AI model and non-empty MCP source selection.
  *
  * Output:
@@ -214,7 +229,11 @@ async function requestConversation(model: ModelId, mcpServerIds: McpServerId[]):
  * - Keeps internal tool output separate from readable transcript content.
  */
 function ConversationMessage({ message, index }: { message: FlueConversationMessage; index: number }) {
-  const text = messageText(message);
+  const storedText = messageText(message);
+  const configuration = messageConfiguration(message);
+  const text = message.role === 'user' && configuration && 'prompt' in configuration
+    ? configuration.prompt
+    : storedText;
   const trace = messageTrace(message);
   if (!text && trace.length === 0 && message.role === 'assistant') return null;
   const traceRunning = trace.some((item) => item.state === 'running');
@@ -226,6 +245,15 @@ function ConversationMessage({ message, index }: { message: FlueConversationMess
         <strong>{message.role === 'user' ? 'You' : 'Research'}</strong>
       </div>
       <div className="message-body">
+        {configuration && (
+          <p className="message-config">
+            {modelById(configuration.model).name}
+            {' / '}
+            {configuration.mcpServerIds
+              .map((id) => MCP_REGISTRY.find((server) => server.id === id)?.shortLabel ?? id)
+              .join(' + ')}
+          </p>
+        )}
         {message.role === 'assistant' && trace.length > 0 && (
           <details className="response-trace">
             <summary>
@@ -300,7 +328,7 @@ export function App() {
       preferences: defaultModelChanged ? { ...preferences, model: DEFAULT_MODEL_ID } : preferences,
     };
   });
-  // Thread configuration is immutable server-side; changing either value creates a new conversation.
+  // Controls select the model and sources for the next prompt in this durable conversation.
   const [model, setModel] = useState<ModelId>(initial.preferences.model);
   const [mcpServerIds, setMcpServerIds] = useState<McpServerId[]>(initial.preferences.mcpServerIds);
   const [conversationId, setConversationId] = useState(initial.conversation?.id ?? '');
@@ -308,13 +336,16 @@ export function App() {
   const [input, setInput] = useState('');
   const [uiError, setUiError] = useState('');
   const [isCreating, setIsCreating] = useState(!initial.conversation);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submissionAdmitted, setSubmissionAdmitted] = useState(false);
+  const submissionPending = useRef(false);
 
   // Flue reconnects whenever the signed conversation ID changes and restores durable history automatically.
   const agentUrl = conversationId ? `/api/agents/research/${conversationId}` : undefined;
   const agent = useFlueAgent({ url: agentUrl });
   const messages = useDeferredValue(agent.messages);
   const visibleMessages = messages.filter((message) => message.display === 'visible' && (message.role === 'user' || message.role === 'assistant'));
-  const busy = isCreating || agent.status === 'submitted' || agent.status === 'streaming';
+  const busy = isCreating || isSubmitting || agent.status === 'submitted' || agent.status === 'streaming';
   const selectedModel = modelById(model);
   const activeConversation = conversations.find((conversation) => conversation.id === conversationId);
 
@@ -418,38 +449,53 @@ export function App() {
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const prompt = input.trim();
-    if (!prompt || busy || !conversationId) return;
+    if (!prompt || busy || submissionPending.current || !conversationId || !agentUrl) return;
+    submissionPending.current = true;
+    setIsSubmitting(true);
+    setSubmissionAdmitted(false);
     setInput('');
     setUiError('');
+    let admitted = false;
     try {
-      await agent.sendMessage(prompt);
-      // Message content remains in Flue; only title and recency metadata are saved in the browser.
-      /**
-       * Input:
-       * - The latest local conversation index after a successful send.
-       *
-       * Output:
-       * - The active thread retitled when needed and moved to the front.
-       *
-       * What this function does:
-       * - Updates browser metadata without duplicating Flue's durable message storage.
-       */
-      setConversations((current) => {
-        const existing = current.find((conversation) => conversation.id === conversationId);
-        if (!existing) return current;
-        const updated = {
-          ...existing,
-          title: existing.title === UNTITLED_CONVERSATION ? conversationTitle(prompt) : existing.title,
-          updatedAt: Date.now(),
-        };
-        const next = [updated, ...current.filter((conversation) => conversation.id !== conversationId)];
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-        persistConversations(next);
-        return next;
+      const client = createFlueClient({ url: agentUrl });
+      const messageBody = encodeConfiguredPrompt(prompt, model, mcpServerIds);
+      await submitWithConversationLock(conversationId, {
+        messageBody,
+        send: (body, idempotencyKey) => {
+          // Flue supports keyed direct admission at runtime; the current SDK declaration has not exposed it yet.
+          const options = {
+            message: { kind: 'user' as const, body },
+            idempotencyKey,
+          };
+          return client.send(options);
+        },
+        wait: (admission) => client.wait(admission),
+        onAdmitted: () => {
+          admitted = true;
+          setSubmissionAdmitted(true);
+          // Message content remains in Flue; only title and recency metadata are saved in the browser.
+          setConversations((current) => {
+            const existing = current.find((conversation) => conversation.id === conversationId);
+            if (!existing) return current;
+            const updated = {
+              ...existing,
+              title: existing.title === UNTITLED_CONVERSATION ? conversationTitle(prompt) : existing.title,
+              updatedAt: Date.now(),
+            };
+            const next = [updated, ...current.filter((conversation) => conversation.id !== conversationId)];
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+            persistConversations(next);
+            return next;
+          });
+        },
       });
     } catch (error) {
-      setInput(prompt);
+      if (!admitted) setInput(prompt);
       setUiError(error instanceof Error ? error.message : 'The research request could not be submitted.');
+    } finally {
+      submissionPending.current = false;
+      setIsSubmitting(false);
+      setSubmissionAdmitted(false);
     }
   }
 
@@ -496,6 +542,33 @@ export function App() {
 
   /**
    * Input:
+   * - The approved model and source selection for the next prompt.
+   *
+   * Output:
+   * - Updated controls and browser metadata while the active durable conversation ID stays unchanged.
+   *
+   * What this function does:
+   * - Makes configuration mutable per prompt without moving the user to a different Flue Durable Object.
+   */
+  function updateConfiguration(nextModel: ModelId, nextMcpServerIds: McpServerId[]) {
+    setUiError('');
+    setModel(nextModel);
+    setMcpServerIds(nextMcpServerIds);
+    localStorage.setItem(MODEL_KEY, nextModel);
+    localStorage.setItem(MCP_KEY, JSON.stringify(nextMcpServerIds));
+    setConversations((current) => {
+      const existing = current.find((conversation) => conversation.id === conversationId);
+      if (!existing) return current;
+      const updated = { ...existing, model: nextModel, mcpServerIds: nextMcpServerIds };
+      const next = current.map((conversation) => conversation.id === conversationId ? updated : conversation);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+      persistConversations(next);
+      return next;
+    });
+  }
+
+  /**
+   * Input:
    * - One browser conversation pointer selected for deletion.
    *
    * Output:
@@ -524,14 +597,14 @@ export function App() {
    * - A newly selected approved model ID.
    *
    * Output:
-   * - A new thread pinned to that model.
+   * - The active thread configured to use that model for its next prompt.
    *
    * What this function does:
-   * - Preserves thread immutability instead of changing a model mid-history.
+   * - Keeps one comparison history while changing Flue's submission-scoped model selection.
    */
   function changeModel(nextModel: ModelId) {
     if (nextModel === model || busy) return;
-    void startNewConversation(nextModel, mcpServerIds);
+    updateConfiguration(nextModel, mcpServerIds);
   }
 
   /**
@@ -539,10 +612,10 @@ export function App() {
    * - The MCP server ID whose checkbox changed.
    *
    * Output:
-   * - A new thread with the updated non-empty source set, or a validation error.
+   * - The active thread's next-prompt source set, or a validation error.
    *
    * What this function does:
-   * - Preserves registry order and prevents source-free research sessions.
+   * - Preserves registry order and prevents source-free research submissions.
    */
   function toggleMcpServer(serverId: McpServerId) {
     if (busy) return;
@@ -553,7 +626,7 @@ export function App() {
       setUiError('Keep at least one documentation source enabled.');
       return;
     }
-    void startNewConversation(model, next);
+    updateConfiguration(model, next);
   }
 
   /**
@@ -576,7 +649,9 @@ export function App() {
   // Status precedence converts Flue's machine states into one concise user-facing label.
   const statusText = isCreating
     ? 'Preparing desk'
-    : agent.status === 'streaming'
+    : isSubmitting
+      ? submissionAdmitted ? 'Researching' : 'Submitting durably'
+      : agent.status === 'streaming'
       ? 'Researching'
       : agent.status === 'submitted'
         ? 'Queued durably'
@@ -649,16 +724,16 @@ export function App() {
             <span>{selectedModel.name} / {mcpServerIds.length} sources</span>
           </div>
 
-          {/* Model and source controls start new immutable threads rather than mutating history. */}
+          {/* Model and source controls configure the next prompt without replacing durable history. */}
           <section className="thread-controls" aria-label="Thread configuration">
             <div className="thread-model-control">
-              <label htmlFor="model-select">Workers AI model <span>Changing starts a new thread</span></label>
+              <label htmlFor="model-select">Workers AI model <span>Applies to the next question</span></label>
               <select id="model-select" value={model} disabled={busy} onChange={(event) => changeModel(event.target.value as ModelId)}>
                 {MODEL_REGISTRY.map((option) => <option value={option.id} key={option.id}>{option.name} · {option.provider}</option>)}
               </select>
             </div>
             <div className="thread-source-control">
-              <p>Documentation sources <span>Changing starts a new thread</span></p>
+              <p>Documentation sources <span>Applies to the next question</span></p>
               <div className="composer-sources">
                 {MCP_REGISTRY.map((server) => (
                   <label className={`composer-source ${mcpServerIds.includes(server.id) ? 'selected' : ''}`} key={server.id} title={server.description}>
@@ -715,9 +790,11 @@ export function App() {
               />
               <div className="composer-actions">
                 <span>Enter to submit / Shift+Enter for a new line</span>
-                {busy && !isCreating
+                {submissionAdmitted || agent.status === 'submitted' || agent.status === 'streaming'
                   ? <button className="stop-button" type="button" onClick={() => void stopResearch()}>Stop</button>
-                  : <button className="submit-button" type="submit" disabled={!input.trim() || !conversationId}>Search</button>}
+                  : <button className="submit-button" type="submit" disabled={busy || !input.trim() || !conversationId}>
+                    {isSubmitting ? 'Submitting...' : 'Search'}
+                  </button>}
               </div>
             </form>
           </footer>

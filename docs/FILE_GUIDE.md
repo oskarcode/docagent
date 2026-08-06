@@ -6,23 +6,23 @@ Risk means how broadly a mistake can affect the running application.
 
 ### `src/app.ts`
 
-- Role: configures Workers AI, defines Hono routes/security, verifies conversation ownership, mounts Flue, and serves assets.
+- Role: configures Workers AI, defines the small Hono API, verifies conversation ownership, and mounts Flue.
 - Django/Python equivalent: `asgi.py`, middleware, `urls.py`, and small views.
 - Called by: the Flue/Cloudflare generated Worker entrypoint.
-- Calls into: `ResearchAgent`, registry guards, session helpers, Flue router, and `ASSETS`.
+- Calls into: `ResearchAgent`, registry guards, session helpers, and the Flue router.
 - Risk: High; mistakes can expose history or break every request.
-- Edit when: changing API routes, headers, ownership policy, provider settings, or asset fallback.
+- Edit when: changing API routes, ownership policy, or provider settings.
 - If this breaks: check `/api/health`, Worker logs, bindings, then middleware path parsing.
 
 ### `src/agents/research-agent.ts`
 
-- Role: defines the only durable agent, selected model, mounted research policy, enabled MCP connections, and response metadata.
+- Role: defines the only durable agent, per-prompt model, consolidated research skill, enabled MCP connections, and response metadata.
 - Django/Python equivalent: a stateful async service/orchestrator.
 - Called by: Flue's generated Durable Object router.
 - Calls into: registry parsing and Flue hooks.
 - Risk: High; hook order and MCP/model configuration affect every answer.
 - Edit when: changing research behavior, MCP setup, model options, durability, or metadata.
-- If this breaks: inspect the signed ID, Flue build output, agent logs, and MCP activity trace.
+- If this breaks: inspect the prompt envelope, signed-ID fallback, Flue build output, agent logs, and MCP activity trace.
 
 ### `frontend/src/App.tsx`
 
@@ -48,11 +48,11 @@ Risk means how broadly a mistake can affect the running application.
 
 ### `src/lib/registry.ts`
 
-- Role: central allowlists for models and MCP sources plus compact source-mask encoding.
+- Role: central allowlists, generic MCP runtime metadata, compact legacy masks, and per-prompt configuration encoding.
 - Django/Python equivalent: settings constants plus Pydantic-style runtime guards.
 - Called by: Worker, agent, frontend, activity labels, and tests.
 - Calls into: no application modules.
-- Risk: High; IDs are persisted in signed tokens and browser storage.
+- Risk: High; IDs and prompt configuration are persisted in signed tokens, browser storage, and Flue history.
 - Edit when: adding/removing a supported model or official source.
 - If this breaks: run `test/registry.test.ts`; avoid changing existing source bit values.
 
@@ -66,6 +66,15 @@ Risk means how broadly a mistake can affect the running application.
 - Edit when: Flue changes part shapes or the UI needs another safe activity label.
 - If this breaks: run `test/activity.test.ts` and inspect a persisted message part.
 
+### `frontend/src/conversation-lock.ts`
+
+- Role: prevents two same-origin tabs from submitting concurrently to one Flue conversation.
+- Django/Python equivalent: a browser-side per-session mutex held through task completion.
+- Called by: `App.tsx` during prompt admission and settlement waiting.
+- Risk: High; without it Flue may join a prompt whose model/MCP configuration differs from the active submission.
+- Edit when: changing submission concurrency or supported browser behavior.
+- If this breaks: run `test/conversation-lock.test.ts` and test two tabs on the same conversation.
+
 ### `frontend/src/styles.css`
 
 - Role: global visual tokens, desktop layout, history rail, controls, transcript, composer, and responsive behavior.
@@ -75,46 +84,27 @@ Risk means how broadly a mistake can affect the running application.
 - Edit when: changing appearance or mobile behavior.
 - If this breaks: test widths above 900px, 621-900px, and at/below 620px.
 
-### `src/agents/AGENT.md`
-
-- Role: always-mounted behavior for direct, source-grounded research.
-- Django/Python equivalent: versioned service policy/configuration.
-- Called by: `useInstruction()` in `ResearchAgent`.
-- Calls into: the mounted `research-planning` skill by instruction.
-- Risk: High; prompt changes can alter tool order and citation quality.
-- Edit when: changing stable agent behavior, not one-off user requests.
-- If this breaks: verify the first substantive tool call is `activate_skill`.
-
 ### `src/skills/research-planning/SKILL.md`
 
-- Role: progressive research workflow, search limits, and citation checks.
+- Role: the single research workflow and evidence-policy document, including search limits and citation checks.
 - Django/Python equivalent: a reusable service procedure loaded on demand.
 - Called by: `useSkill()` and the model's `activate_skill` tool.
-- Calls into: `SOURCE_POLICY.md` for comparisons/security/architecture/best practices.
 - Risk: High; it controls evidence collection.
 - Edit when: changing research budgets or evidence procedure.
-- If this breaks: inspect skill activation and resource-read activity.
-
-### `src/skills/research-planning/SOURCE_POLICY.md`
-
-- Role: first-party evidence and cross-vendor comparison rules.
-- Django/Python equivalent: a policy resource read by the service workflow.
-- Called by: the activated skill when the question requires it.
-- Risk: Medium.
-- Edit when: changing evidence quality or comparison requirements.
-- If this breaks: check that the resource path returned by skill activation is read exactly.
+- If this breaks: verify the first substantive tool call is `activate_skill` and inspect subsequent MCP activity.
 
 ## Infra/Config Files
 
 - `wrangler.jsonc`: `settings.py` plus deployment manifest; changes affect bindings, variables, assets, Durable Object migrations, and observability. Risk: High.
 - `vite.config.ts`: Worker bundler config; Flue scanning must precede Cloudflare snapshotting. Risk: High.
 - `frontend/vite.config.ts`: React build root/output and local API proxy. Risk: Medium.
+- `frontend/public/_headers`: security headers applied by Workers Static Assets without invoking Hono. Risk: Medium.
 - `scripts/prepare-deploy.mjs`: patches the generated Wrangler snapshot with frontend assets. Risk: High for deploys.
 - `package.json`: dependencies and canonical run/check/deploy commands. Risk: Medium.
 - `package-lock.json`: exact dependency graph; update through npm, not by hand.
 - `tsconfig.json`: strict TypeScript checking for Worker, frontend, tests, and configs. Risk: Medium.
 - `vitest.config.ts`: Node-based unit test discovery. Risk: Low.
-- `test/*.test.ts`: focused regression tests for registry, sessions, and activity safety. Risk: Low.
+- `test/*.test.ts`: focused regression tests for registry, sessions, activity safety, and cross-tab submission locking. Risk: Low.
 
 ## Generated/Downloaded Files
 

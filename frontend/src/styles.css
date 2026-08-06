@@ -168,6 +168,7 @@ h1 {
 .message-gutter span { color: #455763; margin-right: 10px; }
 .message.assistant .message-gutter strong { color: var(--orange); }
 .message-body { min-width: 0; color: #cbd4da; font-size: 14px; line-height: 1.75; }
+.message-config { width: fit-content; margin: 0 0 10px; padding: 2px 7px; border: 1px solid #2e414e; color: #8295a2; font: 700 9px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
 .message-body > :first-child { margin-top: 0; }
 .message-body > :last-child { margin-bottom: 0; }
 .message-body h1, .message-body h2, .message-body h3 { color: #f1f3f4; font-family: Georgia, "Times New Roman", serif; line-height: 1.2; }

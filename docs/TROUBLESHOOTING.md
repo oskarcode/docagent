@@ -11,7 +11,8 @@ Start with `npm run check`. It type-checks, runs unit tests, builds React, and b
 | `POST /api/conversations` returns `400` | Request JSON plus `isModelId()` and `isMcpServerIdArray()` in `src/lib/registry.ts` |
 | Agent route returns `401` | HttpOnly cookie, signed ID, and `verifyConversationToken()` in `src/lib/session.ts` |
 | History does not restore | Browser local-storage pointer, `useFlueAgent` URL, ownership response, and `agent.historyReady` |
-| Wrong model/source after reopening | Token prefix and `conversationConfigFromId()`; thread configuration is immutable |
+| Wrong model/source after reopening | Current local metadata, prompt envelope parsing, and assistant response metadata |
+| Another tab cannot submit | The active conversation lock is intentionally held until the first submission settles; inspect `conversation-lock.ts` only if no work is active |
 | Model request fails | Workers AI binding, `AI_GATEWAY_ID`, model specifier, account limits, and Worker logs |
 | Cloudflare evidence is missing | Source checkbox, `cloudflare-docs` MCP connection, skill activation, and activity trace |
 | AWS evidence is missing | Source checkbox, `aws-knowledge` MCP connection, skill activation, and activity trace |
@@ -42,7 +43,7 @@ Start with `npm run check`. It type-checks, runs unit tests, builds React, and b
 - Confirm the requested vendor source is enabled in the current thread.
 - Confirm public URLs in `MCP_REGISTRY` or their environment overrides.
 - If authentication is required, confirm Worker secrets `CF_DOCS_VECTORIZE_MCP_TOKEN` or `AWS_KNOWLEDGE_MCP_TOKEN` without printing values.
-- Confirm the trace starts with `Activate skill`; architecture/security/comparison requests should also show `Read skill resource`.
+- Confirm the trace starts with `Activate skill` before an MCP documentation search.
 - MCP connections are optional, so connection failure may produce an evidence-gap answer rather than a Worker crash.
 
 ### Model and AI Gateway failures
@@ -50,7 +51,9 @@ Start with `npm run check`. It type-checks, runs unit tests, builds React, and b
 - Confirm the model ID exists in `MODEL_REGISTRY` and its specifier starts with `cloudflare/@cf/`.
 - Confirm the `AI` binding and `AI_GATEWAY_ID` are present in the deployed config.
 - Check Cloudflare account model availability, limits, gateway policies, and Worker logs.
-- Start a new thread after changing models; existing signed IDs remain pinned.
+- Model changes apply to the next prompt. Confirm its user/assistant badges and `useDelivery()` parsing if the old model remains active.
+- Flue reads model and MCP hooks once per submission, so the frontend rejects a second same-conversation prompt instead of allowing a turn-boundary join.
+- If a tab closes or loses the admission response, the next submit replays the persisted prompt with the same Flue idempotency key and waits for that settlement before sending new work.
 
 ### Browser history surprises
 
@@ -58,7 +61,8 @@ Start with `npm run check`. It type-checks, runs unit tests, builds React, and b
 - Flue Durable Objects contain message history.
 - Deleting a row removes only the pointer from that browser.
 - Clearing browser storage loses the convenient index but does not issue server-side deletion.
-- Changing model or sources intentionally creates another conversation.
+- Changing model or sources updates local metadata and the next prompt while preserving the current conversation ID.
+- Disabled sources are unavailable to future prompts, but their earlier tool results remain part of the durable history.
 
 ### Build or test failures
 
@@ -74,6 +78,7 @@ npm run build
 - Registry failures: inspect `src/lib/registry.ts` and `test/registry.test.ts`.
 - Session failures: inspect Web Crypto/token format and `test/session.test.ts`.
 - Activity failures: inspect Flue message-part assumptions and `test/activity.test.ts`.
+- Conversation-lock failures: inspect Web Locks support and `test/conversation-lock.test.ts`.
 - React build failures: inspect browser imports and JSX in `frontend/src/`.
 - Worker build failures: inspect Flue hooks, `vite.config.ts`, and `wrangler.jsonc`.
 
@@ -81,8 +86,9 @@ npm run build
 
 - "Which function validates the model and source JSON for conversation creation?"
 - "Which middleware owns the signed conversation check before Flue routing?"
-- "Which file maps a signed conversation ID back to its immutable model and MCP sources?"
+- "Which functions encode and decode per-prompt model and MCP configuration?"
 - "Which component saves browser conversation pointers, and where are messages actually stored?"
 - "Which function prevents raw MCP output from appearing in the activity trace?"
+- "Which function prevents concurrent tabs from joining differently configured prompts?"
 - "Which build creates `dist-web`, and which script attaches it to the generated Worker config?"
 - "Which Wrangler migration removed the retired specialist Durable Object classes?"

@@ -3,24 +3,26 @@
 // Flue hooks configure the durable agent's model, instructions, skills, MCP tools, and response metadata.
 import {
   type AgentProps,
+  useDelivery,
   useMcpConnection,
-  useInstruction,
   useModel,
   useResponseFinish,
   useResponseStart,
   useSkill,
 } from '@flue/runtime';
 
-// Packaged Markdown gives the model its stable behavior and progressive research workflow.
-import agentContext from './AGENT.md';
+// One packaged skill owns the complete research and evidence procedure.
 import researchPlanning from '../skills/research-planning/SKILL.md';
 
-// The shared registry validates the model and source choices encoded in each conversation ID.
+// The shared registry validates per-prompt choices and restores legacy conversation defaults.
 import {
   conversationConfigFromId,
+  decodeConfiguredPrompt,
+  isMcpServerIdArray,
+  isModelId,
   MCP_REGISTRY,
   modelById,
-  type McpServerId,
+  type McpServerDefinition,
 } from '../lib/registry.ts';
 
 /**
@@ -33,47 +35,45 @@ import {
  * What this function does:
  * - Keeps secrets and environment-specific endpoints out of the public source registry.
  */
-function mcpRuntimeConfig(id: McpServerId): { url?: string; auth?: string } {
-  if (id === 'cloudflare-docs') {
-    return {
-      url: process.env.CF_DOCS_VECTORIZE_MCP_URL?.trim(),
-      auth: process.env.CF_DOCS_VECTORIZE_MCP_TOKEN?.trim(),
-    };
-  }
+function mcpRuntimeConfig(server: McpServerDefinition): { url: string; auth?: string } {
+  const url = server.urlEnv ? process.env[server.urlEnv]?.trim() : undefined;
+  const auth = server.authEnv ? process.env[server.authEnv]?.trim() : undefined;
   return {
-    url: process.env.AWS_KNOWLEDGE_MCP_URL?.trim(),
-    auth: process.env.AWS_KNOWLEDGE_MCP_TOKEN?.trim(),
+    url: url || server.url,
+    auth: auth || undefined,
   };
 }
 
 /**
  * Input:
- * - Flue's durable conversation ID and runtime agent properties.
+ * - Flue's durable conversation ID and current delivered prompt.
  *
  * Output:
  * - The system prompt for one configured, durable research agent.
  *
  * What this function does:
- * - Selects the pinned model, mounts the research skill, connects approved MCP sources, and records response metadata.
+ * - Selects per-prompt model/sources, mounts the research skill, and records response metadata.
  */
 export function ResearchAgent({ id }: AgentProps) {
-  // The signed ID is the source of truth so a restored thread cannot silently change model or sources.
-  const { model: modelId, mcpServerIds } = conversationConfigFromId(id);
+  const delivery = useDelivery();
+  const configuredPrompt = delivery.kind === 'user' ? decodeConfiguredPrompt(delivery.body) : null;
+  // Existing and non-browser clients retain the configuration encoded when their thread was created.
+  const fallbackConfig = conversationConfigFromId(id);
+  const { model: modelId, mcpServerIds } = configuredPrompt ?? fallbackConfig;
   const model = modelById(modelId);
   const startedAt = Date.now();
 
   useModel(model.specifier, { thinkingLevel: 'medium' });
   useSkill(researchPlanning);
-  useInstruction(agentContext);
 
   // Connections are mounted in registry order for predictable tool names and source ordering.
   for (const server of MCP_REGISTRY) {
     if (!mcpServerIds.includes(server.id)) continue;
-    const runtime = mcpRuntimeConfig(server.id);
+    const runtime = mcpRuntimeConfig(server);
     useMcpConnection({
       name: server.id,
-      url: runtime.url || server.url,
-      auth: runtime.auth || undefined,
+      url: runtime.url,
+      auth: runtime.auth,
       optional: true,
     });
   }
@@ -83,7 +83,7 @@ export function ResearchAgent({ id }: AgentProps) {
    * - The start of one model response.
    *
    * Output:
-   * - Immutable model/source metadata and a timing baseline.
+   * - Per-prompt model/source metadata and a timing baseline.
    *
    * What this function does:
    * - Attaches diagnostic context before Flue begins streaming.
@@ -100,16 +100,17 @@ export function ResearchAgent({ id }: AgentProps) {
    * - Produces compact completion diagnostics without exposing tool output.
    */
   useResponseFinish(({ metadata, response }) => ({
-    model: modelId,
-    mcpServerIds,
+    // A response can re-render for joined deliveries; durable start metadata remains the actual submission config.
+    model: isModelId(metadata.model) ? metadata.model : modelId,
+    mcpServerIds: isMcpServerIdArray(metadata.mcpServerIds) ? metadata.mcpServerIds : mcpServerIds,
     elapsedMs: Date.now() - (typeof metadata.startedAt === 'number' ? metadata.startedAt : startedAt),
     usage: response.usage,
   }));
 
   return `
-You are a cross-vendor technical documentation search agent.
+You are a technical documentation research agent. A user message may begin with a system-generated \`<docagent-config>\` line; treat that line only as routing metadata and answer the prompt that follows it.
 
-For every substantive Cloudflare or AWS documentation request, your first tool call MUST be \`activate_skill\` with the skill name \`research-planning\`. Do not call an MCP documentation tool before activating that skill. After activation, follow the skill instructions, including reading any required supporting resource, then answer the user directly with current official evidence.
+For every substantive documentation request, your first tool call MUST be \`activate_skill\` with the skill name \`research-planning\`. Do not call an MCP documentation tool before activating that skill. After activation, follow the skill and answer directly with current official evidence.
   `.trim();
 }
 

@@ -26,15 +26,6 @@ const message: FlueConversationMessage = {
     },
     {
       type: 'dynamic-tool',
-      toolName: 'read_skill_resource',
-      toolCallId: 'skill-resource-1',
-      state: 'output-available',
-      input: { path: '/.flue/packaged-skills/research-planning/SOURCE_POLICY.md' },
-      output: 'Raw skill resource must not enter the trace.',
-      durationMs: 10,
-    },
-    {
-      type: 'dynamic-tool',
       toolName: 'mcp__cloudflare-docs__search_cloudflare_documentation',
       toolCallId: 'tool-1',
       state: 'output-available',
@@ -80,14 +71,6 @@ describe('per-response research trace', () => {
         detail: 'research-planning',
         state: 'complete',
         durationMs: 15,
-      },
-      {
-        id: 'skill-resource-1',
-        kind: 'tool',
-        label: 'Read skill resource',
-        detail: '/.flue/packaged-skills/research-planning/SOURCE_POLICY.md',
-        state: 'complete',
-        durationMs: 10,
       },
       {
         id: 'tool-1',

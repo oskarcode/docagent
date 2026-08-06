@@ -17,7 +17,6 @@
   // The React build is an SPA; API routes run Worker code before asset lookup.
   "assets": {
     "directory": "./dist-web",
-    "binding": "ASSETS",
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   },

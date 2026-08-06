@@ -27,7 +27,7 @@ Public source: https://github.com/oskarcode/docagent
 
 ## What You Actually Maintain
 
-1. `src/agents/`: agent behavior, mounted instructions, MCP connections, and durability policy.
+1. `src/agents/`: agent behavior, per-prompt configuration, MCP connections, and durability policy.
 2. `src/lib/`: model/source allowlists and anonymous session security.
 3. `frontend/src/`: conversation UI, safe activity projection, and responsive styling.
 4. `src/skills/research-planning/`: research procedure and evidence policy.
@@ -38,7 +38,8 @@ Usually do not edit `node_modules/`, `.wrangler/`, `dist/`, or `dist-web/`. They
 ## What This Project Does
 
 - Creates an anonymous HttpOnly browser session and signs each conversation ID for that session (`src/lib/session.ts`).
-- Pins one curated Workers AI model and one or more approved documentation sources to each thread (`src/lib/registry.ts`).
+- Selects one curated Workers AI model and approved documentation sources independently for each prompt (`src/lib/registry.ts`).
+- Holds one browser-wide lock per conversation through durable settlement and recovers ambiguous admissions with a persisted Flue idempotency key (`frontend/src/conversation-lock.ts`).
 - Runs one `ResearchAgent` that activates a research skill and directly queries enabled Cloudflare/AWS MCP tools (`src/agents/research-agent.ts`).
 - Streams answers, reasoning status, and sanitized tool labels to React without displaying raw tool output (`frontend/src/activity.ts`).
 - Stores messages durably through Flue while the browser stores up to 30 thread pointers in `localStorage` (`frontend/src/App.tsx`).
@@ -53,9 +54,8 @@ React browser
 Hono Worker: validation + anonymous ownership check
   v
 Flue ResearchAgent Durable Object
-  +--> Workers AI binding --> AI Gateway --> selected model
-  +--> Cloudflare Docs MCP (when enabled/relevant)
-  +--> AWS Knowledge MCP (when enabled/relevant)
+  +--> Workers AI binding --> AI Gateway --> prompt-selected model
+  +--> registry-selected public MCP sources
   v
 Durable streamed response and history --> React transcript
 ```
@@ -67,9 +67,10 @@ There are no vendor specialist agents or delegation layer. Evidence: `src/agents
 1. `frontend/src/App.tsx` restores a valid local conversation pointer or calls `POST /api/conversations`.
 2. `src/app.ts` validates the model/source selection and `src/lib/session.ts` creates a signed ID bound to the HttpOnly browser session.
 3. Ownership middleware verifies every request below `/api/agents/research/:id` before handing it to Flue.
-4. `ResearchAgent` decodes immutable model/source choices, mounts `research-planning`, and connects only selected MCP servers.
-5. Flue invokes Workers AI and relevant official-documentation tools, persists message parts, and streams the response.
-6. React renders answer text separately from sanitized reasoning/tool activity.
+4. React acquires an exclusive same-origin conversation lock, adds validated model/source routing metadata, and admits the prompt.
+5. `ResearchAgent` selects the submission-scoped model and MCP connections, then mounts the consolidated `research-planning` skill.
+6. Flue invokes Workers AI and relevant official-documentation tools, persists message parts, and streams the response.
+7. React holds the lock until Flue records settlement, then renders answer text, per-message configuration badges, and sanitized reasoning/tool activity separately.
 
 ## Hosting and Deployment
 
@@ -89,7 +90,8 @@ There are no vendor specialist agents or delegation layer. Evidence: `src/agents
 - Auth boundary: anonymous browser-session isolation, not login-based user authentication (`src/lib/session.ts`).
 - Ownership: HMAC-signed conversation IDs are valid only with the browser session that created them.
 - Cookie: HttpOnly, `SameSite=Strict`, 30-day lifetime, and `Secure` on HTTPS.
-- Allowlists: external JSON and local-storage values must match `MODEL_REGISTRY` and `MCP_REGISTRY`.
+- Allowlists: conversation JSON, prompt routing metadata, and local-storage values must match `MODEL_REGISTRY` and `MCP_REGISTRY`.
+- Response hardening: Worker-generated APIs and Static Assets both set content-type, referrer, and browser-feature policy headers.
 - Optional secrets: `CF_DOCS_VECTORIZE_MCP_TOKEN` and `AWS_KNOWLEDGE_MCP_TOKEN`; store values as Worker secrets, never in source.
 - Public endpoint overrides: `CF_DOCS_VECTORIZE_MCP_URL` and `AWS_KNOWLEDGE_MCP_URL` in `wrangler.jsonc`.
 - Important limit: anyone using the same browser session can reopen its locally indexed conversations.
@@ -99,14 +101,22 @@ There are no vendor specialist agents or delegation layer. Evidence: `src/agents
 - `GET /api/health`: confirms the Worker router is reachable without invoking AI.
 - `POST /api/conversations`: accepts `{ model, mcpServerIds }` and returns a signed conversation ID.
 - `/api/agents/research/:conversationId/*`: Flue-managed message, history, stream, cancel, and durable-agent routes protected by ownership middleware.
-- Non-API `GET`/`HEAD`: serves frontend assets with SPA fallback.
+- Non-API navigation: Cloudflare Static Assets serves the frontend and SPA fallback without invoking Hono.
 
 ## Frontend Overview
 
 - `App.tsx` owns the current model/sources, local conversation index, Flue connection, transcript, and composer.
-- Changing the model or sources creates a new thread because configuration is encoded in its signed ID.
+- Changing the model or sources keeps the current thread and applies to the next prompt; active streams keep their original configuration.
+- A conversation accepts one browser submission at a time across same-origin tabs because Flue model/MCP hooks are submission-scoped. Lost admission responses replay the exact keyed payload instead of creating a second delivery.
+- Each prompt and answer shows the model/source configuration used, making within-thread comparisons visible after refresh.
 - Deleting a conversation removes its browser pointer, not Flue's durable messages.
 - `activity.ts` intentionally exposes tool names and selected input details, never raw tool responses.
+
+## Adding a Public MCP Source
+
+Add one entry to `MCP_REGISTRY` in `src/lib/registry.ts` with a unique ID, label, HTTPS URL, power-of-two `bit`, and optional environment override names. Set `defaultEnabled: false` unless every new conversation should mount it. The frontend selector and `ResearchAgent` connection loop are registry-driven, so they require no source-specific branch.
+
+The current compact mask supports approximately 30 sources. Keep existing bit values stable because signed conversation IDs persist them.
 
 ## Quick Start
 

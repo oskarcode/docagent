@@ -22,7 +22,6 @@ async function prepareDeploy() {
   // API requests run the Worker first; all other paths use static files or the SPA index fallback.
   config.assets = {
     directory: '../../dist-web',
-    binding: 'ASSETS',
     not_found_handling: 'single-page-application',
     run_worker_first: ['/api/*'],
   };

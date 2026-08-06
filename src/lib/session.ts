@@ -1,4 +1,4 @@
-// Registry helpers validate and encode the immutable model/source portion of each signed token.
+// Registry helpers validate and encode each signed token's initial model/source configuration.
 import {
   decodeMcpMask,
   encodeMcpMask,

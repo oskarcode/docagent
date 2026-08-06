@@ -4,10 +4,13 @@ import { describe, expect, it } from 'vitest';
 // Registry units are tested directly without starting a Worker or browser.
 import {
   conversationConfigFromId,
+  decodeConfiguredPrompt,
   decodeMcpMask,
+  encodeConfiguredPrompt,
   encodeMcpMask,
   isMcpServerIdArray,
   isModelId,
+  MCP_REGISTRY,
   modelById,
   MODEL_REGISTRY,
 } from '../src/lib/registry.ts';
@@ -39,7 +42,7 @@ describe('research registries', () => {
    * - Assertions for mask round-tripping and invalid-input rejection.
    *
    * What this function does:
-   * - Protects the compact source configuration embedded in signed IDs.
+   * - Protects the compact legacy source configuration embedded in signed IDs.
    */
   it('round-trips approved MCP selections through a compact mask', () => {
     const selected = ['cloudflare-docs', 'aws-knowledge'] as const;
@@ -52,5 +55,48 @@ describe('research registries', () => {
       model: 'kimi-k2-6',
       mcpServerIds: selected,
     });
+  });
+
+  /**
+   * Input:
+   * - One visible prompt plus approved per-submission model and source choices.
+   *
+   * Output:
+   * - Assertions for exact routing-metadata round trips and malformed-input rejection.
+   *
+   * What this function does:
+   * - Prevents model/source switches from changing or leaking into the visible prompt text.
+   */
+  it('round-trips per-prompt configuration in one durable conversation', () => {
+    const encoded = encodeConfiguredPrompt(
+      'Compare the two answers.',
+      'glm-5-2',
+      ['cloudflare-docs'],
+    );
+    expect(decodeConfiguredPrompt(encoded)).toEqual({
+      prompt: 'Compare the two answers.',
+      model: 'glm-5-2',
+      mcpServerIds: ['cloudflare-docs'],
+    });
+    expect(decodeConfiguredPrompt('An ordinary legacy prompt.')).toBeNull();
+    expect(decodeConfiguredPrompt('<docagent-config>{"v":1,"model":"unknown","mcpServerIds":[]}</docagent-config>\nQuestion')).toBeNull();
+  });
+
+  /**
+   * Input:
+   * - The complete compile-time MCP registry.
+   *
+   * Output:
+   * - Assertions for unique IDs, unique bit assignments, and deployable HTTPS endpoints.
+   *
+   * What this function does:
+   * - Keeps adding a public MCP server to one validated registry entry instead of new runtime branches.
+   */
+  it('keeps MCP definitions safe for data-driven mounting', () => {
+    expect(new Set(MCP_REGISTRY.map((server) => server.id)).size).toBe(MCP_REGISTRY.length);
+    expect(MCP_REGISTRY.every((server) => /^[a-z0-9-]+$/.test(server.id))).toBe(true);
+    expect(new Set(MCP_REGISTRY.map((server) => server.bit)).size).toBe(MCP_REGISTRY.length);
+    expect(MCP_REGISTRY.every((server) => server.bit > 0 && (server.bit & (server.bit - 1)) === 0)).toBe(true);
+    expect(MCP_REGISTRY.every((server) => new URL(server.url).protocol === 'https:')).toBe(true);
   });
 });

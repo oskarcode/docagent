@@ -53,7 +53,19 @@ export const MODEL_REGISTRY = [
 export type ModelId = (typeof MODEL_REGISTRY)[number]['id'];
 export const DEFAULT_MODEL_ID: ModelId = 'glm-5-2';
 
-// Each source receives one bit so source selection fits safely inside the signed conversation ID.
+export type McpServerDefinition = {
+  readonly id: string;
+  readonly name: string;
+  readonly shortLabel: string;
+  readonly description: string;
+  readonly url: string;
+  readonly urlEnv?: string;
+  readonly authEnv?: string;
+  readonly bit: number;
+  readonly defaultEnabled: boolean;
+};
+
+// Each source receives one legacy bit for compact signed conversation IDs.
 export const MCP_REGISTRY = [
   {
     id: 'cloudflare-docs',
@@ -61,6 +73,8 @@ export const MCP_REGISTRY = [
     shortLabel: 'CF',
     description: 'Official Cloudflare product documentation.',
     url: 'https://docs.mcp.cloudflare.com/mcp',
+    urlEnv: 'CF_DOCS_VECTORIZE_MCP_URL',
+    authEnv: 'CF_DOCS_VECTORIZE_MCP_TOKEN',
     bit: 1,
     defaultEnabled: true,
   },
@@ -70,10 +84,12 @@ export const MCP_REGISTRY = [
     shortLabel: 'AWS',
     description: 'Official AWS product documentation and availability data.',
     url: 'https://knowledge-mcp.global.api.aws',
+    urlEnv: 'AWS_KNOWLEDGE_MCP_URL',
+    authEnv: 'AWS_KNOWLEDGE_MCP_TOKEN',
     bit: 2,
     defaultEnabled: true,
   },
-] as const;
+] as const satisfies readonly McpServerDefinition[];
 
 export type McpServerId = (typeof MCP_REGISTRY)[number]['id'];
 // New conversations begin with every source explicitly marked as enabled by the registry.
@@ -82,6 +98,17 @@ export const DEFAULT_MCP_SERVER_IDS: McpServerId[] = MCP_REGISTRY
   .map((server) => server.id);
 
 const knownMcpMask = MCP_REGISTRY.reduce((mask, server) => mask | server.bit, 0);
+const PROMPT_CONFIG_START = '<docagent-config>';
+const PROMPT_CONFIG_END = '</docagent-config>';
+
+export type ConversationConfig = {
+  model: ModelId;
+  mcpServerIds: McpServerId[];
+};
+
+export type ConfiguredPrompt = ConversationConfig & {
+  prompt: string;
+};
 
 /**
  * Input:
@@ -191,4 +218,56 @@ export function conversationConfigFromId(id: string): { model: ModelId; mcpServe
   const mcpServerIds = decodeMcpMask(mask ?? '');
   if (!isModelId(model) || !mcpServerIds) throw new Error('Invalid conversation configuration.');
   return { model, mcpServerIds };
+}
+
+/**
+ * Input:
+ * - A visible user prompt and its approved model/source selection.
+ *
+ * Output:
+ * - One user-message body carrying versioned routing metadata before the visible prompt.
+ *
+ * What this function does:
+ * - Lets one durable conversation choose model and MCP connections independently for each submission.
+ */
+export function encodeConfiguredPrompt(
+  prompt: string,
+  model: ModelId,
+  mcpServerIds: readonly McpServerId[],
+): string {
+  const config = JSON.stringify({ v: 1, model, mcpServerIds });
+  return `${PROMPT_CONFIG_START}${config}${PROMPT_CONFIG_END}\n${prompt}`;
+}
+
+/**
+ * Input:
+ * - An untrusted persisted or newly submitted user-message body.
+ *
+ * Output:
+ * - Its validated routing configuration and visible prompt, or null for an ordinary message.
+ *
+ * What this function does:
+ * - Shares one strict parser between the agent runtime and browser transcript projection.
+ */
+export function decodeConfiguredPrompt(value: string): ConfiguredPrompt | null {
+  const firstLineEnd = value.indexOf('\n');
+  if (firstLineEnd < 0) return null;
+  const firstLine = value.slice(0, firstLineEnd);
+  if (!firstLine.startsWith(PROMPT_CONFIG_START) || !firstLine.endsWith(PROMPT_CONFIG_END)) return null;
+
+  try {
+    const config = JSON.parse(firstLine.slice(PROMPT_CONFIG_START.length, -PROMPT_CONFIG_END.length)) as {
+      v?: unknown;
+      model?: unknown;
+      mcpServerIds?: unknown;
+    };
+    if (config.v !== 1 || !isModelId(config.model) || !isMcpServerIdArray(config.mcpServerIds)) return null;
+    return {
+      model: config.model,
+      mcpServerIds: config.mcpServerIds,
+      prompt: value.slice(firstLineEnd + 1),
+    };
+  } catch {
+    return null;
+  }
 }

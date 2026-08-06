@@ -6,10 +6,10 @@ import { setProvider } from '@flue/runtime';
 import { cloudflareBindingProvider } from '@flue/runtime/cloudflare/workers-ai';
 import { createAgentRouter } from '@flue/runtime/routing';
 
-// Hono is the lightweight HTTP router, comparable to Django urls plus middleware.
+// Hono is the small API router used to protect and mount Flue conversations.
 import { Hono } from 'hono';
 
-// Application modules own the research agent, approved models, and browser-session security.
+// Application modules own the research agent, approved configuration, and browser-session security.
 import { ResearchAgent } from './agents/research-agent.ts';
 import { isMcpServerIdArray, isModelId } from './lib/registry.ts';
 import {
@@ -23,7 +23,6 @@ import {
 type Bindings = {
   AI: Ai;
   AI_GATEWAY_ID: string;
-  ASSETS: Fetcher;
 };
 
 // Flue hooks run outside Hono handlers, so they read bindings from Cloudflare's module environment.
@@ -36,19 +35,10 @@ setProvider(cloudflareBindingProvider({
   streamIdleTimeoutMs: 5 * 60 * 1000,
 }));
 
-// This router owns public API security before handing approved requests to Flue.
+// This router owns session isolation before handing approved requests to Flue.
 const app = new Hono<{ Bindings: Bindings }>();
 
-/**
- * Input:
- * - Every HTTP request and the next matching Hono handler.
- *
- * Output:
- * - The downstream response with baseline browser-security headers.
- *
- * What this function does:
- * - Applies response hardening consistently to APIs and frontend assets.
- */
+// Static Assets applies the same policy from `frontend/public/_headers`; API responses run here.
 app.use('*', async (c, next) => {
   await next();
   c.header('X-Content-Type-Options', 'nosniff');
@@ -117,17 +107,5 @@ app.use('/api/agents/research/*', async (c, next) => {
 
 // Flue owns streaming, persistence, cancellation, and history beneath this route prefix.
 app.route('/api/agents/research', createAgentRouter(ResearchAgent));
-
-/**
- * Input:
- * - Any non-API GET or HEAD request.
- *
- * Output:
- * - A static file or the React SPA index fallback from Cloudflare Assets.
- *
- * What this function does:
- * - Serves the separately built frontend after API routes have had priority.
- */
-app.on(['GET', 'HEAD'], '*', (c) => c.env.ASSETS.fetch(c.req.raw));
 
 export default app;
