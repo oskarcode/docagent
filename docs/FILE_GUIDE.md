@@ -26,6 +26,8 @@
 | `frontend/public/icon.svg` | Application icon | HTML and manifest | Low |
 | `frontend/vite.config.ts` | React frontend build output | `npm run build:web` | Medium |
 
+Frontend assets are not served by custom Hono middleware or a catch-all route. `wrangler.jsonc` delegates them to Cloudflare Static Assets, and `_headers` owns the static-response header policy.
+
 ## Configuration And Build
 
 | File | Responsibility | Important rule |

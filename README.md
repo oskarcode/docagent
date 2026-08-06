@@ -53,6 +53,8 @@ wrangler.jsonc               Cloudflare bindings, migrations, assets, observabil
 
 See `docs/CODEBASE_OVERVIEW.md`, `docs/FILE_GUIDE.md`, and `docs/TROUBLESHOOTING.md` for deeper maintenance guidance.
 
+Hono does not proxy frontend files through an `ASSETS` binding or catch-all route. Cloudflare Static Assets owns file delivery and SPA fallback. The remaining Hono middleware is limited to API response headers and signed-conversation ownership checks; the deleted rate-limiter Durable Object remains only in append-only Wrangler migration history.
+
 ## Local Development
 
 Requirements:

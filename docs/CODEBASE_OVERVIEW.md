@@ -32,6 +32,12 @@ Flue Durable Object: one logical conversation
 
 Static React assets and API routes share the same Worker deployment. `run_worker_first` sends `/api/*` through Worker code before asset lookup, while other unknown paths receive the SPA shell.
 
+### Removed routing layers
+
+- The manual Hono `ASSETS` binding and non-API catch-all handler were removed. Cloudflare Static Assets now serves files and performs SPA fallback directly.
+- The old `ResearchRateLimiter` Durable Object is no longer bound or called. Its `v1` creation and `v2` deletion entries remain because Wrangler migration history is append-only.
+- Hono still applies API security headers and verifies signed conversation ownership before Flue handles conversation routes. Those middleware layers were not removed.
+
 ## Request Lifecycle
 
 ### Conversation creation
