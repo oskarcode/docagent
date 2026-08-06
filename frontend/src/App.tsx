@@ -34,6 +34,8 @@ const CONVERSATIONS_KEY = 'tech_docs_flue_conversations';
 const MODEL_KEY = 'tech_docs_flue_model';
 const MCP_KEY = 'tech_docs_flue_mcp_servers';
 const DEFAULT_MODEL_VERSION_KEY = 'tech_docs_flue_default_model_version';
+// Bump this opaque migration value when existing browsers must adopt a corrected product default once.
+const DEFAULT_MODEL_VERSION = '2';
 const UNTITLED_CONVERSATION = 'New research';
 const MAX_SAVED_CONVERSATIONS = 30;
 
@@ -355,11 +357,11 @@ export function App() {
     const storedCurrent = storedConversation();
     const conversations = storedConversations(storedCurrent);
     const preferences = storedCurrent ?? storedPreferences();
-    const defaultModelChanged = localStorage.getItem(DEFAULT_MODEL_VERSION_KEY) !== DEFAULT_MODEL_ID;
+    const defaultModelChanged = localStorage.getItem(DEFAULT_MODEL_VERSION_KEY) !== DEFAULT_MODEL_VERSION;
 
     // A changed product default starts one fresh thread but keeps older pinned conversations available.
     if (defaultModelChanged) {
-      localStorage.setItem(DEFAULT_MODEL_VERSION_KEY, DEFAULT_MODEL_ID);
+      localStorage.setItem(DEFAULT_MODEL_VERSION_KEY, DEFAULT_MODEL_VERSION);
       localStorage.setItem(MODEL_KEY, DEFAULT_MODEL_ID);
       localStorage.removeItem(STORAGE_KEY);
     }

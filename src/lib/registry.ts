@@ -1,6 +1,14 @@
 // This allowlist is the only set of Workers AI models that the public UI and API accept.
 export const MODEL_REGISTRY = [
   {
+    id: 'glm-5-2',
+    name: 'GLM-5.2',
+    provider: 'Z.ai',
+    specifier: 'cloudflare/@cf/zai-org/glm-5.2',
+    description: 'Large-context reasoning for complex technical and coding questions.',
+    capabilities: ['Reasoning', 'Tools', 'Large context'],
+  },
+  {
     id: 'kimi-k2-6',
     name: 'Kimi K2.6',
     provider: 'Moonshot AI',
@@ -15,14 +23,6 @@ export const MODEL_REGISTRY = [
     specifier: 'cloudflare/@cf/moonshotai/kimi-k2.7-code',
     description: 'Code-focused research and long-horizon technical analysis.',
     capabilities: ['Reasoning', 'Tools', 'Vision', 'Paid plan'],
-  },
-  {
-    id: 'glm-5-2',
-    name: 'GLM-5.2',
-    provider: 'Z.ai',
-    specifier: 'cloudflare/@cf/zai-org/glm-5.2',
-    description: 'Large-context reasoning for complex technical and coding questions.',
-    capabilities: ['Reasoning', 'Tools', 'Large context'],
   },
   {
     id: 'glm-4-7-flash',

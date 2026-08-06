@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   conversationConfigFromId,
   decodeConfiguredPrompt,
+  DEFAULT_MODEL_ID,
   decodeMcpMask,
   encodeConfiguredPrompt,
   encodeMcpMask,
@@ -28,6 +29,8 @@ describe('research registries', () => {
    * - Protects the runtime model allowlist and provider specifiers from drift.
    */
   it('accepts only curated Workers AI model aliases', () => {
+    expect(DEFAULT_MODEL_ID).toBe('glm-5-2');
+    expect(MODEL_REGISTRY[0].id).toBe(DEFAULT_MODEL_ID);
     expect(isModelId('kimi-k2-6')).toBe(true);
     expect(isModelId('gpt-oss-120b')).toBe(true);
     expect(isModelId('@cf/arbitrary/model')).toBe(false);
